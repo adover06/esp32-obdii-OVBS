@@ -1,0 +1,21 @@
+# This folder is the whole Arduino sketchbook. Only the car dashboard
+# project is tracked; everything else (other sketches, libraries) is ignored.
+/*
+!/.gitignore
+!/README.md
+
+!/esp32_dash/
+!/esp32_obd_test/
+!/esp32_simple/
+!/esp32_cvbs_test/
+!/esp32_obd_rpm/
+!/elm327_client/
+!/uno_dash/
+!/uno_tvout_test/
+!/dash_preview_app/
+!/dash_previews/
+
+# compiled output (desktop preview, Arduino IDE "Export Compiled Binary")
+build/
+
+.DS_Store
