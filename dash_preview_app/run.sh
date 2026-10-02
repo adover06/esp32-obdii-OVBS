@@ -1,5 +1,8 @@
 #!/bin/bash
 # Builds (first run takes ~1 min) and opens the live dashboard preview.
+#   ./run.sh        240x240 picture (WROOM board)
+#   ./run.sh 360    360x240 picture (PSRAM board)
+#   ./run.sh --build-only   just build the LovyanGFX objects (used by validate.sh)
 set -e
 cd "$(dirname "$0")"
 L="$HOME/Documents/Arduino/libraries/LovyanGFX/src"
@@ -14,6 +17,7 @@ if [ ! -f build/.lib_done ]; then
   done
   touch build/.lib_done
 fi
+[ "$1" = "--build-only" ] && exit 0
 SDL_MAIN="$L/../examples_for_PC/CMake_SDL/sdl_main.cpp"
 clang++ -std=c++17 $FL preview.cpp "$SDL_MAIN" build/*.o -L/opt/homebrew/lib -lSDL2 -o build/preview
-./build/preview
+DASH_W="${1:-240}" ./build/preview

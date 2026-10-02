@@ -67,6 +67,7 @@ struct Shared {
 
 Shared shared;
 SemaphoreHandle_t lock = nullptr;
+TaskHandle_t taskHandle = nullptr;
 BluetoothSerial bt;
 ELM327 elm;
 
@@ -143,6 +144,39 @@ float request(int id, bool& mil, int& codes)
   return 0;
 }
 
+// Mode 03 reply -> codes like "P0133". ELMduino's own parser assumes the CAN
+// layout (a count byte after "43"); J1850 PWM (this car) sends one line per
+// 3 codes: "43" + three 4-digit codes, padded with 0000. Handles both.
+static int hexDigit(char c) { return c <= '9' ? c - '0' : (c & ~0x20) - 'A' + 10; }
+
+int parseTroubleCodes(const char* p, char out[][6], int maxCodes)
+{
+  int n = 0;
+  if (!p) return 0;
+  while (*p && n < maxCodes) {
+    char line[64];
+    int len = 0;
+    while (*p && *p != '\r') {                       // one reply line, hex digits only
+      char c = *p++;
+      if (isxdigit((unsigned char)c) && len < 63) line[len++] = c;
+    }
+    while (*p == '\r') p++;
+    line[len] = 0;
+    if (len < 6 || line[0] != '4' || line[1] != '3') continue;
+    int start = (len - 2) % 4 == 2 ? 4 : 2;          // CAN: skip the count byte
+    for (int i = start; i + 4 <= len && n < maxCodes; i += 4) {
+      if (!strncmp(line + i, "0000", 4)) continue;   // padding
+      int first = hexDigit(line[i]);
+      out[n][0] = "PCBU"[first >> 2];
+      out[n][1] = '0' + (first & 3);
+      memcpy(out[n] + 2, line + i + 1, 3);
+      out[n][5] = 0;
+      n++;
+    }
+  }
+  return n;
+}
+
 // RPM every other request (it drives the tach and shift light), the rest
 // take turns as they come due.
 int pickNext(int justDone, int& rr, const uint32_t* lastTry)
@@ -191,14 +225,32 @@ bool initElm(int attempt)
   setElm(msg, dash::YELLOW);
   Serial.printf("[ELM] try %d: init, protocol '%c', timeout %d ms...\n", attempt, PROTOCOL, TIMEOUT_MS);
   uint32_t t0 = millis();
-  if (elm.begin(bt, ELM_RAW_DEBUG, TIMEOUT_MS, PROTOCOL)) {
-    Serial.printf("[ELM] init OK in %.1f s - car is answering\n", (millis() - t0) / 1000.0);
-    setElm("ELM: connected to car", dash::GREEN);
-    return true;
+  // Start from a fresh ELMduino object every time: begin() mallocs a new reply
+  // buffer without freeing the old one (a leak on every reconnect), and a
+  // request cut off by a dropout would leave its private state machine waiting.
+  if (elm.payload) free(elm.payload);
+  elm = ELM327();
+  if (!elm.begin(bt, ELM_RAW_DEBUG, TIMEOUT_MS, PROTOCOL)) {
+    Serial.println("[ELM] adapter did not answer. Retrying...");
+    setElm("ELM: adapter not answering - retrying", dash::RED);
+    return false;
   }
-  Serial.println("[ELM] init FAILED. Is the key at ON (not just ACC)?");
-  setElm("ELM: FAILED - key ON? retrying", dash::RED);
-  return false;
+  // With a fixed protocol, begin() only proves the ADAPTER answered.
+  // Ask the car for something real before calling it connected.
+  Serial.printf("[ELM] adapter OK in %.1f s, asking the car...\n", (millis() - t0) / 1000.0);
+  uint32_t t1 = millis();
+  do {
+    elm.supportedPIDs_1_20();
+    vTaskDelay(1);
+  } while (elm.nb_rx_state == ELM_GETTING_MSG && millis() - t1 < 6000);
+  if (elm.nb_rx_state != ELM_SUCCESS) {
+    Serial.printf("[ELM] car did not answer (%s). Is the key at ON (not just ACC)?\n", statusText(elm.nb_rx_state));
+    setElm("ELM: car not answering - key ON?", dash::RED);
+    return false;
+  }
+  Serial.printf("[ELM] car is answering (%.1f s total)\n", (millis() - t0) / 1000.0);
+  setElm("ELM: connected to car", dash::GREEN);
+  return true;
 }
 
 void pollUntilDisconnected()
@@ -231,9 +283,12 @@ void pollUntilDisconnected()
       if (current == CHECK_ENGINE) { shared.milOn = mil; shared.codeCount = codes; }
       if (current == CODES) {
         shared.codesRead = true;
-        shared.codesListed = min((int)elm.DTC_Response.codesFound, 8);
-        for (int c = 0; c < shared.codesListed; c++) strncpy(shared.codes[c], elm.DTC_Response.codes[c], 5);
+        shared.codesListed = parseTroubleCodes(elm.payload, shared.codes, 8);
       }
+    }
+    if (current == CODES && st == ELM_NO_DATA) {   // some ECUs answer NO DATA when nothing is stored
+      shared.codesRead = true;
+      shared.codesListed = 0;
     }
     if (now - windowStart >= 1000) {
       shared.repliesPerSec = replies * 1000.0f / (now - windowStart);
@@ -281,7 +336,6 @@ void task(void*)
 bool beginBluetooth()
 {
   if (!lock) lock = xSemaphoreCreateMutex();
-  Serial.printf("[MEM] before Bluetooth: free %u, largest block %u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   // true = we start the connection (master), true = release BLE memory (we only use Classic)
   if (!bt.begin("ESP32-OBD", true, true)) {
     Serial.println("[BT ] Bluetooth failed to start (out of memory?)");
@@ -289,7 +343,6 @@ bool beginBluetooth()
     return false;
   }
   bt.setPin(ADAPTER_PIN, strlen(ADAPTER_PIN));
-  Serial.printf("[MEM] after Bluetooth: free %u, largest block %u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   return true;
 }
 
@@ -297,7 +350,13 @@ bool beginBluetooth()
 // The screen loop keeps running on core 1.
 void start()
 {
-  xTaskCreatePinnedToCore(task, "obd", 8192, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(task, "obd", 8192, nullptr, 1, &taskHandle, 0);
+}
+
+// Smallest amount of stack the OBD task has had left (bytes); for tuning.
+uint32_t stackFreeBytes()
+{
+  return taskHandle ? uxTaskGetStackHighWaterMark(taskHandle) : 0;
 }
 
 // ---- turning raw values into the dashboard's Telemetry -------------------------------
@@ -327,17 +386,19 @@ void copyInto(dash::Telemetry& t, float dt)
 
   t.clock += dt;
   auto& d = t.d;
-  // each value is the last GOOD reading (0 until the car has answered once)
-  d.rpm      = s.value[RPM];
-  d.mph      = s.value[SPEED];
-  d.throttle = s.value[THROTTLE];
-  d.load     = s.value[LOAD];
-  d.maf      = s.value[MAF];
-  d.timing   = s.value[TIMING];
-  d.coolantF = s.value[COOLANT];
-  d.iatF     = s.value[INTAKE];
-  d.stft     = s.value[FUEL_TRIM];
-  d.volts    = s.value[BATTERY];
+  // each value is the last GOOD reading (0 until the car has answered once);
+  // anything that isn't a real number becomes 0 so it can't upset the drawing
+  auto num = [&](int i) { float v = s.value[i]; return isfinite(v) ? v : 0.0f; };
+  d.rpm      = num(RPM);
+  d.mph      = num(SPEED);
+  d.throttle = num(THROTTLE);
+  d.load     = num(LOAD);
+  d.maf      = num(MAF);
+  d.timing   = num(TIMING);
+  d.coolantF = num(COOLANT);
+  d.iatF     = num(INTAKE);
+  d.stft     = num(FUEL_TRIM);
+  d.volts    = num(BATTERY);
   d.mpg = (d.mph > 1 && d.maf > 0.5f) ? min(710.7f * d.mph / d.maf, 99.9f) : 0;
   d.gear = estimateGear(d.rpm, d.mph);
 
@@ -368,7 +429,7 @@ void copyInto(dash::Telemetry& t, float dt)
   static uint32_t lastMem = 0;
   if (millis() - lastMem >= 1000) {
     lastMem = millis();
-    snprintf(t.memLine, sizeof(t.memLine), "MEM %uK free  %uK block",
+    snprintf(t.memLine, sizeof(t.memLine), "MEM %uK free %uK blk",
              (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMaxAllocHeap() / 1024));
   }
 

@@ -1,32 +1,39 @@
 // Live desktop preview of the ESP32 dashboard (fake driving data).
-// Uses the same drawing code as the ESP32 sketch, shown in an SDL window.
+// Same drawing code AND the same strip renderer as the ESP32, in an SDL
+// window scaled to the TV's 4:3 shape.
 //
 //   SPACE = the GPIO27 button (next screen)
-//   Q / close window = quit
+//   close window = quit
 //
-// Build and run: ./run.sh
+// Build and run: ./run.sh        (240x240, like the WROOM board)
+//                ./run.sh 360    (360x240, like a PSRAM board)
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <LGFX_AUTODETECT.hpp>
+#include <stdlib.h>
 #include "dash.h"
 #include "dash_fx.h"
+#include "render.h"
 
-static LGFX lcd(dash::W, dash::H, 3);          // 3x window scaling
-static LGFX_Sprite canvas(&lcd);               // 8-bit RGB332, same as the ESP32
+static LGFX* lcd = nullptr;
+static StripRenderer renderer;
 static dash::Simulator sim;
 static fx::DualState dual;
-
-static const int SCREENS = dash::SCREEN_COUNT;
 static int screen = 0;
 
 void setup()
 {
+  const char* env = getenv("DASH_W");
+  int w = env && atoi(env) == 360 ? 360 : 240;
+  dash::setScreen(w, 4.0f / 3.0f);
+  // window = 720x480: 240 px wide pixels are stretched 3x, 360 px ones 2x
+  lcd = new LGFX(w, dash::H, w == 240 ? 3 : 2, 2);
   lgfx::Panel_sdl::addKeyCodeMapping(SDLK_SPACE, 27);
-  lcd.init();
-  canvas.setColorDepth(8);
-  canvas.createSprite(dash::W, dash::H);
-  printf("SPACE = next screen (like the GPIO27 button)\n");
+  lcd->init();
+  lcd->setColorDepth(8);
+  renderer.begin(lcd, w, dash::H);
+  printf("%dx%d preview. SPACE = next screen (like the GPIO27 button)\n", w, dash::H);
 }
 
 void loop()
@@ -38,17 +45,20 @@ void loop()
   last = now;
 
   sim.update(dt);
+  fx::updateDual(dual, sim, dt);
 
   bool down = !lgfx::gpio_in(27);              // active low, like the real button
   if (down && !wasDown) {
-    screen = (screen + 1) % SCREENS;
-    printf("screen %d\n", screen + 1);
+    screen = (screen + 1) % dash::SCREEN_COUNT;
+    printf("screen %d: %s\n", screen + 1, dash::SCREEN_NAMES[screen]);
   }
   wasDown = down;
 
-  if (screen == 0) fx::drawDual(canvas, sim, now, dual, dt);
-  else dash::draw(canvas, screen, sim, now);
-  canvas.pushSprite(0, 0);
+  int s = screen;
+  renderer.render([&](lgfx::LovyanGFX& g) {
+    if (s == 0) fx::drawDual(g, sim, now, dual);
+    else dash::draw(g, s, sim, now);
+  });
 
   uint32_t spent = lgfx::millis() - now;
   if (spent < 33) lgfx::delay(33 - spent);

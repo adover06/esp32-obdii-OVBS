@@ -4,7 +4,7 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
 (RCA) video input. An ESP32 reads the car through a Bluetooth ELM327 adapter
 (Veepeak VP11, J1850 PWM) and generates the video signal itself on GPIO25.
 
-![dashboard screens](dash_previews/esp32_live_screens.png)
+![dashboard screens](dash_previews/esp32_w240_plain.png)
 
 ## Sketches
 
@@ -17,7 +17,7 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
 | `esp32_obd_rpm/` | Minimal Bluetooth ELM327 RPM reader (Serial output) |
 | `elm327_client/` | ELMduino's wired multiple-PID example, for reference |
 | `uno_dash/`, `uno_tvout_test/` | Black-and-white Arduino Uno version using TVout |
-| `dash_preview_app/` | Runs the ESP32 dashboard drawing code on a Mac in an SDL window (`./run.sh`) |
+| `dash_preview_app/` | Mac tools: live preview (`./run.sh`) and pre-upload validation (`./validate.sh`) |
 | `dash_previews/` | Rendered screenshots |
 
 ## Hardware
@@ -30,9 +30,23 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
 
 LovyanGFX, ELMduino, ESP32 Arduino core 3.x (BluetoothSerial). Uno version: TVout.
 
-## Known limit
+## Memory design
 
-Composite video (86 KB at 360x240) plus Bluetooth Classic (~86 KB) nearly fill a
-WROOM ESP32's ~300 KB of RAM, so the flicker-free 86 KB drawing buffer doesn't fit
-alongside Bluetooth. `esp32_dash` currently runs a 320x200, no-buffer memory test.
-An ESP32-WROVER (with PSRAM) removes the limit.
+A WROOM ESP32 has ~300 KB of heap; Bluetooth Classic alone costs ~200 KB
+(reserved controller RAM + the Bluedroid stack). So `esp32_dash`:
+
+- renders at **240x240** without PSRAM (56 KB picture), **360x240** automatically with PSRAM
+- draws each frame in 24-row bands through a 5.8 KB strip buffer (`render.h`)
+  instead of a full off-screen frame, so nothing flickers and ~80 KB is saved
+- keeps guard bytes around the strip buffer and logs `[RENDER] ERROR` if any
+  drawing escapes it (LovyanGFX's `drawWedgeLine`/`drawWideLine` ignore the clip
+  rect and must not be used; `dash::wedge()` replaces them)
+- logs `[MEM]` at each boot step and `[FPS]` every 5 s
+
+## Before uploading
+
+```
+cd dash_preview_app
+./validate.sh     # every screen at both widths: memory escapes + pixel check
+./run.sh          # live preview (./run.sh 360 for the PSRAM layout)
+```
