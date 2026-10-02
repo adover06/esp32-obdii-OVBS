@@ -43,10 +43,17 @@ static float rx(float ry) { return ry / PX_ASPECT; }
 constexpr float DEG2RAD = 0.01745329f;
 constexpr float RAD2DEG = 57.2957795f;
 
-// ---- car constants (2000 Focus Zetec) -------------------------------------------
-constexpr float RPM_MAX   = 7000;
-constexpr float SHIFT_RPM = 6000;   // shift light starts flashing here
-constexpr float IDLE_RPM  = 780;
+// ---- RPM feel (tune these) ------------------------------------------------------
+// The engine's real redline is ~6500, but in normal hard driving the automatic
+// shifts well before that, so with a true-to-life scale the bar barely left
+// green. These make the gauges read "hotter": the dial ends at RPM_MAX, the
+// color steps through yellow and orange sooner, and everything turns red and
+// flashes from SHIFT_RPM up.
+constexpr float RPM_MAX     = 6000;   // full scale of dials and shift bars
+constexpr float YELLOW_RPM  = 3200;   // green -> yellow
+constexpr float ORANGE_RPM  = 4000;   // yellow -> orange
+constexpr float SHIFT_RPM   = 4600;   // red + flashing shift light
+constexpr float IDLE_RPM    = 780;
 // simulator only: mph per 1000 rpm in each gear (index 0 = neutral)
 constexpr float GEAR_MPH_PER_K[6] = { 0, 5.6f, 10.1f, 14.6f, 19.6f, 24.3f };
 
@@ -123,13 +130,13 @@ struct Reading {
   char status[10] = "--";     // "OK", "NO DATA", "TIMEOUT", ...
   uint8_t statusColor = DIM;
   uint32_t lastOkMs = 0;      // millis() of the last good answer, 0 = never
+  uint32_t okCount = 0, errCount = 0;
 };
 
 // Everything the screens draw from. Filled in by the Simulator (fake data)
 // or by the OBD link (obd.h). The screens don't know which.
 struct Telemetry {
   CarData d;
-  History rpmHist, mphHist, thrHist, loadHist;
   EventLog log;
   float clock = 0;                  // seconds since start
   const char* sourceTag = "SIM";    // header tag: SIM / LIVE / NO LINK
@@ -151,24 +158,23 @@ struct Telemetry {
   int codesListed = 0;
   bool codesRead = false;
 
-  Telemetry() { mphHist.scale = thrHist.scale = loadHist.scale = 10; }
+  // link details, for the SYS screen (filled by obd.h)
+  char adapterInfo[24] = "";        // adapter's answer to ATI, e.g. "ELM327 v1.5"
+  char protocolInfo[28] = "";       // answer to ATDP, e.g. "SAE J1850 PWM"
+  uint32_t linkUpMs = 0;            // millis() when the car link came up, 0 = down
+  uint32_t connects = 0, drops = 0; // successful links / Bluetooth drops since boot
+  uint32_t okTotal = 0, errTotal = 0;
 
-  // Call once per frame after d is updated: feeds the graphs and peaks.
-  void sample(float dt) {
+  // ESP32 health, for the SYS screen (filled by the sketch once a second)
+  uint32_t freeHeap = 0, minFreeHeap = 0, maxBlock = 0, obdStackFree = 0;
+  float frameMs = 0;
+  int videoW = 0;
+
+  // Call once per frame after d is updated: tracks peaks.
+  void sample(float) {
     if (d.rpm > d.peakRpm) d.peakRpm = d.rpm;
     if (d.mph > d.peakMph) d.peakMph = d.mph;
-    sampleT += dt;
-    while (sampleT >= 0.1f) {         // graphs sample at 10 Hz
-      sampleT -= 0.1f;
-      rpmHist.push(d.rpm);
-      mphHist.push(d.mph);
-      thrHist.push(d.throttle);
-      loadHist.push(d.load);
-    }
   }
-
-private:
-  float sampleT = 0;
 };
 
 // ---- fake driving ------------------------------------------------------------
@@ -354,7 +360,7 @@ static float ey(int cy, float r, float deg) { return cy + r * sinf(deg * DEG2RAD
 
 static uint8_t zoneRpm(float pos) {
   float r = pos * RPM_MAX;
-  return r < 4500 ? GREEN : r < 5500 ? YELLOW : r < SHIFT_RPM ? ORANGE : RED;
+  return r < YELLOW_RPM ? GREEN : r < ORANGE_RPM ? YELLOW : r < SHIFT_RPM ? ORANGE : RED;
 }
 static uint8_t zoneCyan(float)  { return CYAN; }
 static uint8_t zoneTeal(float)  { return TEAL; }
@@ -475,261 +481,6 @@ static void header(Gfx& g, int idx, int count, const char* name, const Telemetry
   if ((ms / 500) % 2) g.fillRect(tagRight - g.textWidth(t.sourceTag) - 7, 5, 4, 4, t.sourceColor);
 }
 
-// ---- screen 2: HUD -----------------------------------------------------------
-// Driver focus: shift light bar, huge RPM, gear.
-static void drawHud(Gfx& g, const Telemetry& s, uint32_t ms)
-{
-  const CarData& d = s.d;
-  const int M = margin(), inner = W - 2 * M;
-  char buf[16];
-
-  // shift light bar: fills by rpm, whole bar flashes past the shift point
-  bool flash = shiftFlash(d, ms);
-  if (d.rpm >= SHIFT_RPM) segBar(g, M, 19, inner, 16, 1.0f, flash ? zoneRed : zoneWhite, 6, 2);
-  else segBar(g, M, 19, inner, 16, d.rpm / RPM_MAX, zoneRpm, 6, 2);
-  for (int k = 0; k <= 7; k++) {
-    snprintf(buf, sizeof(buf), "%d", k);
-    int tx = M + inner * k / 7;
-    txt(g, buf, tx, 38, k >= 6 ? RED : DIM, &fonts::Font0, k == 0 ? Datum::top_left : k == 7 ? Datum::top_right : Datum::top_center);
-  }
-
-  // big RPM with ghosted 7-segment digits behind it, gear box to the right
-  const int gearW = NARROW ? 62 : 94;
-  const int rpmW = inner - gearW - 6;
-  const float digitScale = NARROW ? 1.0f : 1.2f;
-  const int digitTop = NARROW ? 64 : 62;
-  panel(g, M, 52, rpmW, 76, "ENGINE RPM", CYAN);
-  txt(g, "8888", M + rpmW - 10, digitTop, GRID, &fonts::Font7, Datum::top_right, digitScale);
-  snprintf(buf, sizeof(buf), "%d", (int)(d.rpm / 10) * 10);
-  txt(g, buf, M + rpmW - 10, digitTop, d.rpm >= SHIFT_RPM ? (flash ? RED : WHITE) : WHITE, &fonts::Font7, Datum::top_right, digitScale);
-  snprintf(buf, sizeof(buf), "PEAK %d", (int)d.peakRpm);
-  txt(g, buf, M + 6, 116, DIM);
-
-  int gx = M + rpmW + 6;
-  panel(g, gx, 52, gearW, 76, "GEAR", CYAN);
-  if (d.gear == 0) snprintf(buf, sizeof(buf), "N");
-  else snprintf(buf, sizeof(buf), "%d", d.gear);
-  txt(g, buf, gx + gearW / 2, 92, d.gear == 0 ? YELLOW : CYAN, &fonts::AsciiFont24x48, Datum::middle_center, NARROW ? 1.0f : 1.25f);
-
-  // middle row: speed / load / timing
-  const int gap = 6, w3 = (inner - 2 * gap) / 3;
-  int x0 = M, x1 = M + w3 + gap, x2 = M + 2 * (w3 + gap);
-  panel(g, x0, 136, w3, 44, "SPEED", TEAL);
-  snprintf(buf, sizeof(buf), "%d", (int)(d.mph + 0.5f));
-  txt(g, buf, x0 + w3 - (NARROW ? 6 : 32), 143, WHITE, &fonts::AsciiFont8x16, Datum::top_right, 2);
-  if (!NARROW) txt(g, "MPH", x0 + w3 - 28, 165, DIM);
-
-  panel(g, x1, 136, w3, 44, "LOAD", TEAL);
-  snprintf(buf, sizeof(buf), "%d%%", (int)d.load);
-  txt(g, buf, x1 + w3 - 6, 143, TEXT, &fonts::AsciiFont8x16, Datum::top_right);
-  segBar(g, x1 + 6, 164, w3 - 12, 8, d.load / 100, zoneTeal);
-
-  panel(g, x2, 136, w3, 44, "TIMING", TEAL);
-  snprintf(buf, sizeof(buf), "%.1f", d.timing);
-  txt(g, buf, x2 + w3 - (NARROW ? 6 : 46), 143, TEXT, &fonts::AsciiFont8x16, Datum::top_right);
-  if (!NARROW) txt(g, "BTDC", x2 + w3 - 8, 147, DIM, &fonts::Font0, Datum::top_right);
-  segBar(g, x2 + 6, 164, w3 - 12, 8, d.timing / 40, zoneTeal);
-
-  // bottom row: four small stats
-  struct Stat { const char* name; float v; const char* fmt; float lo, hi; uint8_t (*zone)(float); bool warn; };
-  Stat stats[4] = {
-    { "CLT",  d.coolantF, "%.0f",   100, 240, zoneHeat, d.coolantF > 225 },
-    { "BATT", d.volts,    "%.1fV",  11,  15,  zoneCyan, d.volts < 12.5f },
-    { "THR",  d.throttle, "%.0f%%", 0,   100, zoneMag,  false },
-    { "MPG",  d.mpg,      "%.1f",   0,   50,  zoneCyan, false },
-  };
-  const int gap4 = NARROW ? 4 : 4, w4 = (inner - 3 * gap4) / 4;
-  for (int i = 0; i < 4; i++) {
-    int x = M + i * (w4 + gap4);
-    panel(g, x, 188, w4, 44, stats[i].name, stats[i].warn ? RED : DIM);
-    if (i == 3 && d.mph < 1) snprintf(buf, sizeof(buf), "--");
-    else snprintf(buf, sizeof(buf), stats[i].fmt, stats[i].v);
-    txt(g, buf, x + w4 - 5, 195, stats[i].warn ? RED : TEXT, &fonts::AsciiFont8x16, Datum::top_right);
-    if (i == 0 && !NARROW) degUnit(g, x + 6, 199, "F", DIM);
-    segBar(g, x + 5, 216, w4 - 10, 8, frac(stats[i].v, stats[i].lo, stats[i].hi), stats[i].zone);
-  }
-}
-
-// ---- screen 3: GRID ----------------------------------------------------------
-// Everything at once, btop style: 4x3 cells (3x4 on a narrow screen).
-static void drawGrid(Gfx& g, const Telemetry& s, uint32_t)
-{
-  const CarData& d = s.d;
-  struct Cell { const char* name; float v; const char* fmt; const char* unit; float lo, hi; uint8_t (*zone)(float); uint8_t color; };
-  Cell cells[12] = {
-    { "RPM",       d.rpm,         "%.0f",  "",    0,   RPM_MAX, zoneRpm,  WHITE },
-    { "SPEED",     d.mph,         "%.0f",  "MPH", 0,   120,     zoneCyan, WHITE },
-    { "GEAR",      (float)d.gear, "%.0f",  "",    0,   5,       zoneCyan, CYAN },
-    { "THROTTLE",  d.throttle,    "%.0f",  "%",   0,   100,     zoneMag,  TEXT },
-    { "LOAD",      d.load,        "%.0f",  "%",   0,   100,     zoneTeal, TEXT },
-    { "TIMING",    d.timing,      "%.1f",  "DEG", 0,   40,      zoneTeal, TEXT },
-    { "MAF",       d.maf,         "%.1f",  "G/S", 0,   120,     zoneTeal, TEXT },
-    { "MPG",       d.mpg,         "%.1f",  "",    0,   50,      zoneCyan, GREEN },
-    { "COOLANT",   d.coolantF,    "%.0f",  "F",   100, 240,     zoneHeat, (uint8_t)(d.coolantF > 225 ? RED : TEXT) },
-    { "INTAKE",    d.iatF,        "%.0f",  "F",   40,  160,     zoneHeat, TEXT },
-    { "BATTERY",   d.volts,       "%.1f",  "V",   11,  15,      zoneCyan, (uint8_t)(d.volts < 12.5f ? RED : TEXT) },
-    { "FUEL TRIM", d.stft,        "%+.1f", "%",   -10, 10,      zoneCyan, TEXT },
-  };
-  const int M = margin(), cols = NARROW ? 3 : 4, rows = 12 / cols;
-  const int gap = 4, top = 20, bottom = H - 4;
-  const int cw = (W - 2 * M - (cols - 1) * gap) / cols;
-  const int ch = (bottom - top - (rows - 1) * gap) / rows;
-  char buf[16];
-  for (int i = 0; i < 12; i++) {
-    int x = M + (i % cols) * (cw + gap);
-    int y = top + (i / cols) * (ch + gap);
-    const Cell& c = cells[i];
-    panel(g, x, y, cw, ch, c.name, i < 3 ? CYAN : DIM);
-
-    if (i == 2 && d.gear == 0) snprintf(buf, sizeof(buf), "N");
-    else if (i == 7 && d.mph < 1) snprintf(buf, sizeof(buf), "--");
-    else snprintf(buf, sizeof(buf), c.fmt, c.v);
-    int vy = y + (ch - 32) / 2 - 3;               // 32 px tall value, centered above the bar
-    txt(g, buf, x + cw - 6, vy, c.color, &fonts::AsciiFont8x16, Datum::top_right, 2);
-    int valueLeft = x + cw - 6 - g.textWidth(buf);
-    g.setFont(&fonts::Font0);
-    g.setTextSize(1);
-    if (*c.unit && x + 6 + g.textWidth(c.unit) + 3 <= valueLeft)   // only if it fits beside the value
-      txt(g, c.unit, x + 6, vy + 24, DIM);
-
-    int by = y + ch - 12;
-    if (i == 11) {
-      // fuel trim: bar grows out from the center
-      int cx = x + cw / 2, half = cw / 2 - 8;
-      g.fillRect(x + 6, by, cw - 12, 8, (uint8_t)GRID);
-      g.drawFastVLine(cx, by - 2, 12, (uint8_t)DIM);
-      int len = (int)(frac(fabsf(c.v), 0, 10) * half);
-      if (len < 2 && fabsf(c.v) >= 0.05f) len = 2;
-      if (c.v >= 0) g.fillRect(cx + 2, by, len, 8, (uint8_t)CYAN);
-      else g.fillRect(cx - 1 - len, by, len, 8, (uint8_t)ORANGE);
-    } else {
-      segBar(g, x + 6, by, cw - 12, 8, frac(c.v, c.lo, c.hi), c.zone);
-    }
-  }
-}
-
-// ---- screen 4: SCOPE ---------------------------------------------------------
-// Oscilloscope-style history graphs.
-static void drawScope(Gfx& g, const Telemetry& s, uint32_t)
-{
-  const CarData& d = s.d;
-  const int M = margin(), inner = W - 2 * M;
-  char buf[24];
-
-  snprintf(buf, sizeof(buf), "RPM // %d SEC", (inner - 4) / 10);
-  panel(g, M, 20, inner, 124, buf, CYAN);
-  graph(g, M + 2, 26, inner - 4, 116, s.rpmHist, RPM_MAX, CYAN, PANEL, SHIFT_RPM);
-  txt(g, "SHIFT", M + 4, 26 + 116 - (int)(SHIFT_RPM / RPM_MAX * 115) - 10, RED);
-  snprintf(buf, sizeof(buf), "%d", (int)d.rpm);
-  g.fillRect(W - M - 96, 27, 92, 20, (uint8_t)BG);
-  txt(g, buf, W - M - 8, 30, d.rpm >= SHIFT_RPM ? RED : WHITE, &fonts::AsciiFont8x16, Datum::top_right);
-  snprintf(buf, sizeof(buf), "G%d", d.gear);
-  txt(g, d.gear ? buf : "N", W - M - 84, 30, YELLOW, &fonts::AsciiFont8x16);
-
-  const int gap = 4, half = (inner - gap) / 2;
-  int xa = M, xb = M + half + gap;
-  panel(g, xa, 152, half, 82, NARROW ? "THROTTLE" : "THROTTLE %", MAGENTA);
-  graph(g, xa + 2, 158, half - 4, 74, s.thrHist, 100, MAGENTA, PURPLE);
-  snprintf(buf, sizeof(buf), "%d", (int)d.throttle);
-  txt(g, buf, xa + half - 6, 160, WHITE, &fonts::AsciiFont8x16, Datum::top_right);
-
-  panel(g, xb, 152, half, 82, NARROW ? "MPH" : "SPEED MPH", GREEN);
-  graph(g, xb + 2, 158, half - 4, 74, s.mphHist, 100, GREEN, PHOS_DK);
-  snprintf(buf, sizeof(buf), "%d", (int)(d.mph + 0.5f));
-  txt(g, buf, xb + half - 6, 160, WHITE, &fonts::AsciiFont8x16, Datum::top_right);
-}
-
-// ---- screen 5: TERM ----------------------------------------------------------
-// Green phosphor terminal readout with an event log.
-static void termBar(char* out, float f, int width)
-{
-  int lit = (int)(Simulator::clampf(f, 0, 1) * width + 0.5f);
-  out[0] = '[';
-  for (int i = 0; i < width; i++) out[1 + i] = i < lit ? '#' : '.';
-  out[width + 1] = ']';
-  out[width + 2] = 0;
-}
-
-static void drawTerm(Gfx& g, const Telemetry& s, uint32_t ms)
-{
-  const CarData& d = s.d;
-  g.fillRect(0, 0, W, 13, (uint8_t)PHOS_MID);
-  txt(g, NARROW ? "OBD-II MON  J1850" : "FOCUS-SE OBD-II MON v0.1   J1850-PWM", 4, 3, BG);
-  txt(g, "5/7 TERM", W - 4, 3, BG, &fonts::Font0, Datum::top_right);
-
-  struct Row { const char* name; const char* unit; float f; bool warn; char val[12]; };
-  Row rows[9] = {
-    { "RPM",      "",    d.rpm / RPM_MAX,             d.rpm >= SHIFT_RPM, "" },
-    { "SPEED",    "MPH", d.mph / 120,                 false,              "" },
-    { "GEAR",     "",    0,                           false,              "" },
-    { "THROTTLE", "%",   d.throttle / 100,            false,              "" },
-    { "LOAD",     "%",   d.load / 100,                false,              "" },
-    { "TIMING",   "DEG", d.timing / 40,               false,              "" },
-    { "MAF",      "G/S", d.maf / 120,                 false,              "" },
-    { "COOLANT",  "F",   frac(d.coolantF, 100, 240),  d.coolantF > 225,   "" },
-    { "BATTERY",  "V",   frac(d.volts, 11, 15),       d.volts < 12.5f,    "" },
-  };
-  snprintf(rows[0].val, 12, "%d", (int)d.rpm);
-  snprintf(rows[1].val, 12, "%d", (int)(d.mph + 0.5f));
-  snprintf(rows[3].val, 12, "%d", (int)d.throttle);
-  snprintf(rows[4].val, 12, "%d", (int)d.load);
-  snprintf(rows[5].val, 12, "%.1f", d.timing);
-  snprintf(rows[6].val, 12, "%.1f", d.maf);
-  snprintf(rows[7].val, 12, "%d", (int)d.coolantF);
-  snprintf(rows[8].val, 12, "%.2f", d.volts);
-
-  // columns: name | value | unit | bar (narrow screens use a small unit font
-  // and a shorter bar)
-  const int nameX = NARROW ? 12 : 16, valR = NARROW ? 124 : 144;
-  const int unitX = NARROW ? 127 : 150, barX = NARROW ? 150 : 184;
-  const int cells = NARROW ? 9 : 18;
-  char bar[32];
-  for (int i = 0; i < 9; i++) {
-    int y = 17 + i * 16;
-    if (i % 2) g.fillRect(0, y, W, 16, (uint8_t)PHOS_DK);
-    uint8_t vc = rows[i].warn ? YELLOW : GREEN;
-    txt(g, ">", NARROW ? 2 : 4, y, PHOS_MID, &fonts::AsciiFont8x16);
-    const char* name = rows[i].name;
-    if (NARROW && i == 8) name = "BATT";            // leave a gap before the value
-    txt(g, name, nameX, y, PHOS_MID, &fonts::AsciiFont8x16);
-    txt(g, rows[i].val, valR, y, vc, &fonts::AsciiFont8x16, Datum::top_right);
-    if (NARROW) txt(g, rows[i].unit, unitX, y + 5, GREEN);
-    else txt(g, rows[i].unit, unitX, y, PHOS_MID, &fonts::AsciiFont8x16);
-    if (i == 2) {
-      // gear selector strip:  N 1 2 [3] 4 5
-      int gx = barX + 4, step = NARROW ? 14 : 24;
-      for (int k = 0; k <= 5; k++) {
-        char c[2] = { k ? (char)('0' + k) : 'N', 0 };
-        if (k == d.gear) {
-          g.fillRect(gx - 3, y, 14, 16, (uint8_t)GREEN);
-          txt(g, c, gx, y, BG, &fonts::AsciiFont8x16);
-        } else {
-          txt(g, c, gx, y, PHOS_MID, &fonts::AsciiFont8x16);
-        }
-        gx += step;
-      }
-    } else {
-      termBar(bar, rows[i].f, cells);
-      txt(g, bar, barX, y, vc, &fonts::AsciiFont8x16);
-    }
-  }
-
-  // event log
-  int ly = 17 + 9 * 16 + 4;
-  g.drawFastHLine(0, ly, W, (uint8_t)PHOS_MID);
-  g.fillRect(10, ly - 4, 70, 9, (uint8_t)BG);
-  txt(g, " EVENT LOG", 10, ly - 3, GREEN);
-  int shown = s.log.count < 5 ? s.log.count : 5;
-  for (int i = 0; i < shown; i++) {
-    const char* line = s.log.lines[s.log.count - shown + i];
-    txt(g, line, 6, ly + 7 + i * 10, i == shown - 1 ? GREEN : PHOS_MID);
-  }
-  // prompt with blinking cursor
-  int py = ly + 7 + 5 * 10 + 1;
-  txt(g, "focus@esp32:~$", 6, py, GREEN);
-  if ((ms / 400) % 2) g.fillRect(6 + 15 * 6, py, 6, 8, (uint8_t)GREEN);
-}
-
 // ---- screen 6: ARC -----------------------------------------------------------
 // Radial segmented tach with side meters.
 static void drawArc(Gfx& g, const Telemetry& s, uint32_t ms)
@@ -755,10 +506,11 @@ static void drawArc(Gfx& g, const Telemetry& s, uint32_t ms)
     ringArc(g, cx, cy, rOut, rIn, sa, ea, c);
   }
   // 1000 rpm labels
-  for (int k = 0; k <= 7; k++) {
-    float a = a0 + span * k / 7;
+  const int kMax = (int)(RPM_MAX / 1000);
+  for (int k = 0; k <= kMax; k++) {
+    float a = a0 + span * k / kMax;
     snprintf(buf, sizeof(buf), "%d", k);
-    txt(g, buf, (int)ex(cx, 74, a), (int)ey(cy, 74, a), k >= 6 ? RED : DIM, &fonts::Font0, Datum::middle_center);
+    txt(g, buf, (int)ex(cx, 74, a), (int)ey(cy, 74, a), k * 1000 >= SHIFT_RPM ? RED : DIM, &fonts::Font0, Datum::middle_center);
   }
 
   // center readout (a smaller font when the ring is narrow)
@@ -816,7 +568,7 @@ static void drawBoot(Gfx& g, uint32_t ms, const char* modeLine)
     "",
     modeLine,
     "OBD-II ... J1850 PWM",
-    "SCREENS .. 7",
+    "SCREENS .. 4",
     "",
     "READY",
   };
@@ -848,11 +600,12 @@ static void drawDiag(Gfx& g, const Telemetry& s, uint32_t ms)
   txt(g, b, M, 47, TEXT);
 
   // columns: name | reading | status | age
-  const int readR = NARROW ? 136 : 196, statX = NARROW ? 142 : 210, ageR = W - M;
+  const int readR = NARROW ? 136 : 196, statX = NARROW ? 142 : 204, ageR = W - M;
   txt(g, "VALUE", M, 58, DIM);
   txt(g, "READING", readR, 58, DIM, &fonts::Font0, Datum::top_right);
   txt(g, "STATUS", statX, 58, DIM);
   txt(g, "AGE", ageR, 58, DIM, &fonts::Font0, Datum::top_right);
+  if (!NARROW) txt(g, "OK%", 292, 58, DIM, &fonts::Font0, Datum::top_right);
   g.drawFastHLine(M, 67, W - 2 * M, (uint8_t)GRID);
 
   for (int i = 0; i < s.readingCount; i++) {
@@ -870,6 +623,11 @@ static void drawDiag(Gfx& g, const Telemetry& s, uint32_t ms)
     } else {
       txt(g, r.status, statX, y, r.statusColor, &fonts::Font2);
       txt(g, b, ageR, y, DIM, &fonts::Font2, Datum::top_right);
+      uint32_t tries = r.okCount + r.errCount;   // success rate of this value
+      if (tries) {
+        snprintf(b, sizeof(b), "%u", (unsigned)(r.okCount * 100 / tries));
+        txt(g, b, 292, y, r.okCount * 10 >= tries * 9 ? TEXT : ORANGE, &fonts::Font2, Datum::top_right);
+      }
     }
   }
 
@@ -882,23 +640,94 @@ static void drawDiag(Gfx& g, const Telemetry& s, uint32_t ms)
   txt(g, b, M, y, s.milOn || s.codesListed ? ORANGE : TEXT, &fonts::Font0);
 }
 
+// ---- screen 4: SYS ------------------------------------------------------------
+// Everything about the link and the ESP32 that DIAG has no room for.
+static void sysRow(Gfx& g, int y, const char* label, const char* value, uint8_t color = TEXT)
+{
+  txt(g, label, margin(), y, DIM);
+  txt(g, value, NARROW ? 70 : 96, y, color);
+}
+
+static void sysSection(Gfx& g, int y, const char* title)
+{
+  txt(g, title, margin(), y, CYAN);
+  g.drawFastHLine(margin() + (int)strlen(title) * 6 + 4, y + 3, W - 2 * margin() - (int)strlen(title) * 6 - 4, (uint8_t)GRID);
+}
+
+static void fmtDuration(char* out, size_t n, uint32_t ms)
+{
+  uint32_t s = ms / 1000;
+  if (s >= 3600) snprintf(out, n, "%uh %02um", (unsigned)(s / 3600), (unsigned)(s / 60 % 60));
+  else snprintf(out, n, "%um %02us", (unsigned)(s / 60), (unsigned)(s % 60));
+}
+
+static void drawSys(Gfx& g, const Telemetry& s, uint32_t ms)
+{
+  char b[64], t[24];
+  int y = 18;
+
+  sysSection(g, y, "LINK"); y += 11;
+  if (s.readingCount == 0) {
+    sysRow(g, y, "mode", "simulated data", YELLOW); y += 10;
+  } else {
+    sysRow(g, y, "adapter", s.adapterInfo[0] ? s.adapterInfo : "--"); y += 10;
+    sysRow(g, y, "protocol", s.protocolInfo[0] ? s.protocolInfo : "--"); y += 10;
+    if (s.linkUpMs) { fmtDuration(t, sizeof(t), ms > s.linkUpMs ? ms - s.linkUpMs : 0); snprintf(b, sizeof(b), "up %s", t); }
+    else snprintf(b, sizeof(b), "DOWN");
+    sysRow(g, y, "link", b, s.linkUpMs ? GREEN : RED); y += 10;
+    snprintf(b, sizeof(b), "%u connects, %u drops", (unsigned)s.connects, (unsigned)s.drops);
+    sysRow(g, y, "history", b, s.drops ? ORANGE : TEXT); y += 10;
+    uint32_t tries = s.okTotal + s.errTotal;
+    snprintf(b, sizeof(b), "%u ok, %u err (%u%%)", (unsigned)s.okTotal, (unsigned)s.errTotal,
+             tries ? (unsigned)(s.okTotal * 100 / tries) : 0u);
+    sysRow(g, y, "requests", b); y += 10;
+    snprintf(b, sizeof(b), "%.1f replies/s", s.repliesPerSec);
+    sysRow(g, y, "rate", b); y += 10;
+  }
+
+  y += 3; sysSection(g, y, "ESP32"); y += 11;
+  snprintf(b, sizeof(b), "%uK  (lowest %uK)", (unsigned)(s.freeHeap / 1024), (unsigned)(s.minFreeHeap / 1024));
+  sysRow(g, y, "free RAM", b, s.minFreeHeap && s.minFreeHeap < 16 * 1024 ? RED : TEXT); y += 10;
+  snprintf(b, sizeof(b), "%uK", (unsigned)(s.maxBlock / 1024));
+  sysRow(g, y, "largest", b); y += 10;
+  if (s.frameMs > 0) snprintf(b, sizeof(b), "%.0f ms (%.0f fps)", s.frameMs, 1000.0f / (s.frameMs > 33 ? s.frameMs : 33));
+  else snprintf(b, sizeof(b), "--");
+  sysRow(g, y, "frame", b); y += 10;
+  if (s.readingCount) {
+    snprintf(b, sizeof(b), "%u bytes free", (unsigned)s.obdStackFree);
+    sysRow(g, y, "OBD stack", b, s.obdStackFree && s.obdStackFree < 1024 ? RED : TEXT); y += 10;
+  }
+  fmtDuration(t, sizeof(t), ms);
+  snprintf(b, sizeof(b), "%s   video %dx%d", t, s.videoW, H);
+  sysRow(g, y, "uptime", b); y += 10;
+  snprintf(b, sizeof(b), "%d rpm  %d mph", (int)s.d.peakRpm, (int)(s.d.peakMph + 0.5f));
+  sysRow(g, y, "peaks", b); y += 10;
+
+  y += 3; sysSection(g, y, "EVENTS"); y += 11;
+  int room = (H - 4 - y) / 10;
+  int shown = s.log.count < room ? s.log.count : room;
+  for (int i = 0; i < shown; i++) {
+    const char* line = s.log.lines[s.log.count - shown + i];
+    txt(g, line, margin(), y, i == shown - 1 ? GREEN : PHOS_MID);
+    y += 10;
+  }
+}
+
 // ---- entry point -------------------------------------------------------------
 // Screen 0 is the dual-dial FX screen, drawn by fx::drawDual in dash_fx.h.
-constexpr int SCREEN_COUNT = 7;
-static const char* SCREEN_NAMES[SCREEN_COUNT] = { "DUAL", "HUD", "GRID", "SCOPE", "TERM", "ARC", "DIAG" };
+// (HUD, GRID and SCOPE are archived in archive/dash_archive_screens.h.)
+constexpr int SCREEN_COUNT = 4;
+static const char* SCREEN_NAMES[SCREEN_COUNT] = { "DUAL", "ARC", "DIAG", "SYS" };
 
-// Draws screens 1-6. Stateless: safe to call once per strip.
+// Draws screens 1-3. Stateless: safe to call once per strip.
 static void draw(Gfx& g, int screen, const Telemetry& s, uint32_t ms)
 {
   g.fillScreen((uint8_t)BG);
-  if (screen != 4) header(g, screen, SCREEN_COUNT, SCREEN_NAMES[screen], s, ms);
+  header(g, screen, SCREEN_COUNT, SCREEN_NAMES[screen], s, ms);
   switch (screen) {
-  case 1: drawHud(g, s, ms); break;
-  case 2: drawGrid(g, s, ms); break;
-  case 3: drawScope(g, s, ms); break;
-  case 4: drawTerm(g, s, ms); break;
-  case 5: drawArc(g, s, ms); break;
-  case 6: drawDiag(g, s, ms); break;
+  case 1: drawArc(g, s, ms); break;
+  case 2: drawDiag(g, s, ms); break;
+  case 3: drawSys(g, s, ms); break;
   }
 }
 

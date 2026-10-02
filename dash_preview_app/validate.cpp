@@ -39,7 +39,6 @@ static void fillLive(dash::Telemetry& t, const dash::Simulator& sim, uint32_t ms
 {
   const dash::CarData& d = sim.d;
   t.d = d;
-  t.rpmHist = sim.rpmHist; t.mphHist = sim.mphHist; t.thrHist = sim.thrHist; t.loadHist = sim.loadHist;
   t.log = sim.log;
   t.clock = sim.clock;
   t.sourceTag = "LIVE"; t.sourceColor = dash::GREEN;
@@ -58,7 +57,16 @@ static void fillLive(dash::Telemetry& t, const dash::Simulator& sim, uint32_t ms
     strcpy(r.status, nodata ? "NO DATA" : "OK");
     r.statusColor = nodata ? dash::YELLOW : dash::GREEN;
     r.lastOkMs = nodata ? 0 : ms - 200 * i;
+    r.okCount = nodata ? 0 : 400 + i * 3;
+    r.errCount = nodata ? 120 : (i == 7 ? 90 : i);   // one value with a poor success rate
   }
+  strcpy(t.adapterInfo, "ELM327 v1.5");
+  strcpy(t.protocolInfo, "SAE J1850 PWM");
+  t.linkUpMs = ms > 61000 ? ms - 61000 : 1;
+  t.connects = 2; t.drops = 1;
+  t.okTotal = 4800; t.errTotal = 215;
+  t.freeHeap = 41 * 1024; t.minFreeHeap = 33 * 1024; t.maxBlock = 28 * 1024;
+  t.obdStackFree = 3100; t.frameMs = 24; t.videoW = dash::W;
   t.milOn = true; t.codesRead = true; t.codesListed = 2;
   strcpy(t.codes[0], "P0171"); strcpy(t.codes[1], "P0420");
 }
@@ -91,7 +99,8 @@ int main(int argc, char** argv)
       if (frame % 37) continue;                    // check a spread of frames
       fillLive(live, sim, ms);
       for (int scr = -1; scr < dash::SCREEN_COUNT; scr++) {
-        const dash::Telemetry& data = scr == 6 ? live : (const dash::Telemetry&)sim;
+        // DIAG and SYS get live-style data (the simulator has no OBD link)
+        const dash::Telemetry& data = scr >= 2 ? live : (const dash::Telemetry&)sim;
         auto draw = [&](lgfx::LovyanGFX& g) {
           if (scr == -1) dash::drawBoot(g, frame * 33 % 1600, "VIDEO .... TEST");
           else if (scr == 0) fx::drawDual(g, data, ms, dual);
@@ -119,7 +128,7 @@ int main(int argc, char** argv)
         if (diff > 4) {   // a stray pixel or two where a shape edge meets a band edge is harmless
           if (mismatches++ < 10) printf("FAIL  output: %s at %d px: %d pixels differ from a full-frame render (frame %d)\n", name, W, diff, frame);
         }
-        if (images && frame % 300 == 0 && scr >= 0) {
+        if (images && frame % 740 == 370 && scr >= 0) {   // ~every 24 s of driving
           char path[64];
           snprintf(path, sizeof(path), "validate_out/w%d_%d_%s_%04d.ppm", W, scr + 1, name, frame);
           dump(tv, path);
@@ -128,7 +137,7 @@ int main(int argc, char** argv)
     }
   }
 
-  printf("\n%ld renders checked (8 screens incl. boot x 2 widths x 82 moments)\n", renders);
+  printf("\n%ld renders checked (%d screens + boot x 2 widths x 82 moments)\n", renders, dash::SCREEN_COUNT);
   printf("memory escapes : %ld\n", guardFails);
   printf("output diffs   : %ld\n", mismatches);
   printf("speed (Mac)    : strip %.2f ms vs full %.2f ms per frame (%.1fx)\n", tStrip / renders, tFull / renders, tStrip / tFull);

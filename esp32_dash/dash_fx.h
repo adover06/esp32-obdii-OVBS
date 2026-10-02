@@ -55,14 +55,18 @@ static uint32_t ramp(const Stop* s, size_t n, float f)
   return s[n - 1].color;
 }
 
+// gradients follow the tunable thresholds in dash.h (RPM feel)
+constexpr float F_YELLOW = dash::YELLOW_RPM / dash::RPM_MAX;
+constexpr float F_ORANGE = dash::ORANGE_RPM / dash::RPM_MAX;
+constexpr float F_SHIFT  = dash::SHIFT_RPM  / dash::RPM_MAX;
 static const Stop RPM_RAMP[] = {
-  { 0.00f, CYAN }, { 0.55f, VIOLET }, { 0.78f, MAGENTA }, { 0.86f, RED }, { 1.00f, RED },
+  { 0.00f, CYAN }, { F_YELLOW, VIOLET }, { F_ORANGE, MAGENTA }, { F_SHIFT, RED }, { 1.00f, RED },
 };
 static const Stop MPH_RAMP[] = {
   { 0.00f, CYAN }, { 0.60f, 0x00B6FF }, { 1.00f, VIOLET },
 };
 static const Stop SHIFT_RAMP[] = {
-  { 0.00f, GREEN }, { 0.60f, 0xB6FF00 }, { 0.75f, AMBER }, { 0.86f, RED }, { 1.00f, RED },
+  { 0.00f, GREEN }, { F_YELLOW, 0xB6FF00 }, { F_ORANGE, AMBER }, { F_SHIFT, RED }, { 1.00f, RED },
 };
 
 static void txt(Gfx& g, const char* s, int x, int y, uint32_t color,

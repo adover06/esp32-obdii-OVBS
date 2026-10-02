@@ -7,10 +7,11 @@
 // Button: GPIO27 -> pushbutton -> GND (no resistor needed, internal pull-up)
 //         The on-board BOOT button (GPIO0) works too.
 //         Short press = next screen, hold 1 s = toggle auto-cycle.
-// Serial: send 1-7 to jump to a screen, n = next (115200 baud)
+// Serial: send 1-4 to jump to a screen, n = next (115200 baud)
+// Screens: 1 DUAL (dual dials), 2 ARC (round tach), 3 DIAG (every value), 4 SYS (link + ESP32)
 // Car:    key at ON; adapter "OBDII" not connected to a phone or Mac.
 //
-// Files: dash.h (screens 2-7 + simulator), dash_fx.h (dual dials),
+// Files: dash.h (screens 2-4 + simulator), dash_fx.h (dual dials),
 //        render.h (flicker-free strip renderer), obd.h (Bluetooth/OBD link).
 //
 // Memory plan (no PSRAM): video picture 240x240 = 56 KB, strip buffer 6 KB,
@@ -181,7 +182,7 @@ void setup()
   logMem("after OBD task");
 #endif
 
-  Serial.printf("Dashboard ready (%s data). Button on GPIO27 (or BOOT). Serial: 1-7 = screen, n = next\n",
+  Serial.printf("Dashboard ready (%s data). Button on GPIO27 (or BOOT). Serial: 1-4 = screen, n = next\n",
                 USE_FAKE_DATA ? "FAKE" : "LIVE");
 }
 
@@ -219,15 +220,31 @@ void loop()
     renderer.resetGuards();
   }
 
-  // 3. stats every 5 s: frame time, memory, OBD task stack headroom
+  // 3. stats: SYS screen once a second, Serial log every 5 s
   uint32_t spent = millis() - now;
   static uint32_t statFrames = 0, statSum = 0, statMax = 0, statAt = millis();
+  static uint32_t sysFrames = 0, sysSum = 0, sysAt = millis();
   statFrames++;
   statSum += spent;
   if (spent > statMax) statMax = spent;
+  sysFrames++;
+  sysSum += spent;
+  if (millis() - sysAt >= 1000) {
+    data.frameMs = (float)sysSum / sysFrames;
+    data.freeHeap = ESP.getFreeHeap();
+    data.minFreeHeap = ESP.getMinFreeHeap();   // lowest it has ever been since boot
+    data.maxBlock = ESP.getMaxAllocHeap();
+    data.videoW = dash::W;
+#if !USE_FAKE_DATA
+    data.obdStackFree = obd::stackFreeBytes();
+#endif
+    sysFrames = sysSum = 0;
+    sysAt = millis();
+  }
   if (millis() - statAt >= 5000) {
-    Serial.printf("[FPS] screen %d: avg %u ms, max %u ms per frame | free %u, block %u",
-                  screen + 1, (unsigned)(statSum / statFrames), (unsigned)statMax, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    Serial.printf("[FPS] screen %d: avg %u ms, max %u ms per frame | free %u, lowest %u, block %u",
+                  screen + 1, (unsigned)(statSum / statFrames), (unsigned)statMax, ESP.getFreeHeap(),
+                  ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
 #if !USE_FAKE_DATA
     Serial.printf(" | OBD stack free %u", (unsigned)obd::stackFreeBytes());
 #endif

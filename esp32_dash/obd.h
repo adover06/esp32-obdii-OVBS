@@ -62,6 +62,10 @@ struct Shared {
   uint8_t elmColor = dash::DIM;
   bool polling = false;               // true = connected and reading the car
   float repliesPerSec = 0;
+  uint32_t okCount[ITEM_COUNT] = {}, errCount[ITEM_COUNT] = {};
+  char adapterInfo[24] = "";
+  char protocolInfo[28] = "";
+  uint32_t linkUpMs = 0, connects = 0, drops = 0;
   Shared() { for (int i = 0; i < ITEM_COUNT; i++) status[i] = -99; }
 };
 
@@ -249,6 +253,21 @@ bool initElm(int attempt)
     return false;
   }
   Serial.printf("[ELM] car is answering (%.1f s total)\n", (millis() - t0) / 1000.0);
+
+  // adapter version and the protocol it's using, for the SYS screen
+  char info[24] = "", proto[28] = "";
+  if (elm.sendCommand_Blocking("ATI") == ELM_SUCCESS) strncpy(info, elm.payload, sizeof(info) - 1);
+  if (elm.sendCommand_Blocking("ATDP") == ELM_SUCCESS) strncpy(proto, elm.payload, sizeof(proto) - 1);
+  for (char* c = info; *c; c++) if (*c == '\r' || *c == '\n') *c = ' ';
+  for (char* c = proto; *c; c++) if (*c == '\r' || *c == '\n') *c = ' ';
+  Serial.printf("[ELM] adapter \"%s\", protocol \"%s\"\n", info, proto);
+
+  xSemaphoreTake(lock, portMAX_DELAY);
+  strncpy(shared.adapterInfo, info, sizeof(shared.adapterInfo) - 1);
+  strncpy(shared.protocolInfo, proto, sizeof(shared.protocolInfo) - 1);
+  shared.linkUpMs = millis();
+  shared.connects++;
+  xSemaphoreGive(lock);
   setElm("ELM: connected to car", dash::GREEN);
   return true;
 }
@@ -277,6 +296,8 @@ void pollUntilDisconnected()
 
     xSemaphoreTake(lock, portMAX_DELAY);
     shared.status[current] = st;
+    if (st == ELM_SUCCESS) shared.okCount[current]++;
+    else shared.errCount[current]++;
     if (st == ELM_SUCCESS) {
       shared.value[current] = v;
       shared.lastOkMs[current] = now;
@@ -312,6 +333,8 @@ void pollUntilDisconnected()
 
   xSemaphoreTake(lock, portMAX_DELAY);
   shared.polling = false;
+  shared.linkUpMs = 0;
+  shared.drops++;
   xSemaphoreGive(lock);
   Serial.println("[BT ] connection LOST");
   setLink("BT : connection lost - reconnecting", dash::RED);
@@ -418,7 +441,16 @@ void copyInto(dash::Telemetry& t, float dt)
     strncpy(r.status, statusText(s.status[i]), sizeof(r.status) - 1);
     r.statusColor = statusColor(s.status[i]);
     r.lastOkMs = s.lastOkMs[i];
+    r.okCount = s.okCount[i];
+    r.errCount = s.errCount[i];
   }
+  t.okTotal = t.errTotal = 0;
+  for (int i = 0; i < ITEM_COUNT; i++) { t.okTotal += s.okCount[i]; t.errTotal += s.errCount[i]; }
+  strncpy(t.adapterInfo, s.adapterInfo, sizeof(t.adapterInfo) - 1);
+  strncpy(t.protocolInfo, s.protocolInfo, sizeof(t.protocolInfo) - 1);
+  t.linkUpMs = s.linkUpMs;
+  t.connects = s.connects;
+  t.drops = s.drops;
   t.milOn = s.milOn;
   t.codeCount = s.codeCount;
   t.codesRead = s.codesRead;
