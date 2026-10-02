@@ -19,6 +19,8 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
 | `uno_dash/`, `uno_tvout_test/` | Black-and-white Arduino Uno version using TVout |
 | `dash_preview_app/` | Mac tools: live preview (`./run.sh`) and pre-upload validation (`./validate.sh`) |
 | `dash_previews/` | Rendered screenshots |
+| `fpga/` | MAX1000 FPGA video card: 360x240, 256 colours, double-buffered composite video in SDRAM (Verilog, simulation, Quartus-in-Docker build). See `fpga/README.md` |
+| `esp32_fpga_test/` | ESP32 side of the FPGA card: SPI link test + animated 360x240 test scene (`fpga_link.h` is the driver) |
 
 ## Hardware
 

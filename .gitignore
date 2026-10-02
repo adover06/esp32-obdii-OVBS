@@ -14,6 +14,20 @@
 !/uno_tvout_test/
 !/dash_preview_app/
 !/dash_previews/
+!/esp32_fpga_test/
+!/fpga/
+
+# FPGA: Quartus installers, build output, simulation output, vendor docs
+/fpga/installers/
+/fpga/docs/
+/fpga/build.log
+/fpga/projects/*/db/
+/fpga/projects/*/incremental_db/
+/fpga/projects/*/output_files/
+/fpga/projects/*/compile.log
+/fpga/projects/*/*.qws
+/fpga/projects/*/sta_paths.tcl
+/fpga/projects/sim/out/
 
 # compiled output (desktop preview, Arduino IDE "Export Compiled Binary")
 build/
@@ -22,3 +36,4 @@ build/
 
 # validate.sh --images output
 validate_out/
+__pycache__/

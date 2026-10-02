@@ -1,0 +1,61 @@
+# Generated for the Arrow MAX1000 (10M08SAU169C8G). Compile: ../../quartus.sh compile colorbars
+set_global_assignment -name FAMILY "MAX 10"
+set_global_assignment -name DEVICE 10M08SAU169C8G
+set_global_assignment -name TOP_LEVEL_ENTITY colorbars
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS_WEAK_PULLUP "AS INPUT TRI-STATED WITH WEAK PULL-UP"
+set_global_assignment -name SDC_FILE colorbars.sdc
+set_global_assignment -name SEARCH_PATH ../common
+set_global_assignment -name VERILOG_FILE colorbars.v
+set_global_assignment -name VERILOG_FILE ../common/pll_57m.v
+set_global_assignment -name VERILOG_FILE ../common/video_timing.v
+set_global_assignment -name VERILOG_FILE ../common/ntsc_encoder.v
+set_global_assignment -name VERILOG_FILE ../common/test_pattern.v
+set_location_assignment PIN_H6 -to CLK12M
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLK12M
+set_location_assignment PIN_A8 -to LED[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[0]
+set_location_assignment PIN_A9 -to LED[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[1]
+set_location_assignment PIN_A11 -to LED[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[2]
+set_location_assignment PIN_A10 -to LED[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[3]
+set_location_assignment PIN_B10 -to LED[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[4]
+set_location_assignment PIN_C9 -to LED[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[5]
+set_location_assignment PIN_C10 -to LED[6]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[6]
+set_location_assignment PIN_D8 -to LED[7]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED[7]
+set_location_assignment PIN_M3 -to DAC[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DAC[0]
+set_location_assignment PIN_L3 -to DAC[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DAC[1]
+set_location_assignment PIN_M2 -to DAC[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DAC[2]
+set_location_assignment PIN_M1 -to DAC[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DAC[3]
+set_location_assignment PIN_N3 -to DAC[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DAC[4]
+set_location_assignment PIN_N2 -to DAC[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DAC[5]
+set_location_assignment PIN_E6 -to USER_BTN
+set_instance_assignment -name IO_STANDARD "3.3 V SCHMITT TRIGGER" -to USER_BTN
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to DAC[0]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DAC[0]
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to DAC[1]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DAC[1]
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to DAC[2]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DAC[2]
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to DAC[3]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DAC[3]
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to DAC[4]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DAC[4]
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to DAC[5]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DAC[5]
+
+set_global_assignment -name LAST_QUARTUS_VERSION "23.1std.1 Lite Edition"
