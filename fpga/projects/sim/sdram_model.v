@@ -19,7 +19,7 @@ module sdram_model #(
   parameter T_IS       = 1500,      // input setup
   parameter T_IH       = 800,       // input hold
   parameter T_POWERUP  = 200000000, // 200 us
-  parameter MAX_ROWS   = 512        // rows modelled per bank (the design uses < 512)
+  parameter MAX_ROWS   = 1024       // rows modelled per bank (the design uses < 960)
 ) (
   input  wire        clk,
   input  wire        cke,
@@ -93,7 +93,7 @@ module sdram_model #(
   always @(z_check) if (z_check == rd_seq) drv_en = 1'b0;
 
   wire [3:0] cmd = {cs_n, ras_n, cas_n, we_n};
-  reg  [21:0] addr_of;
+  reg  [22:0] addr_of;
   reg  [11:0] row_q;
 
   always @(posedge clk) begin
@@ -129,7 +129,7 @@ module sdram_model #(
           if (a[10]) fail("auto-precharge not expected");
           if (^a[7:0] === 1'bx) fail("X column");
           row_q   = row[ba];
-          addr_of = {ba, row_q[8:0], a[7:0]};
+          addr_of = {ba, row_q[9:0], a[7:0]};   // must cover every row bit the design uses (MAX_ROWS)
           if (cmd == 4'b0101) begin
             reads = reads + 1;
             if (dqm !== 2'b00) fail("DQM set during READ");

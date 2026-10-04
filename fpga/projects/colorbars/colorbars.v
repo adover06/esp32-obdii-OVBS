@@ -23,7 +23,8 @@ module colorbars #(
 
   wire [1:0] sub, ph;
   wire [9:0] h;
-  wire [8:0] v, px;
+  wire [8:0] v;
+  wire [9:0] px;
   wire [7:0] py;
   wire       sample_end, line_start, frame_start, sync, burst, active;
   video_timing u_tim (
@@ -32,8 +33,8 @@ module colorbars #(
     .sync(sync), .burst(burst), .active(active), .px(px), .py(py)
   );
 
-  // bouncing 24x24 box
-  reg [8:0] bx;
+  // bouncing box: 48 x 24 pixels (720-wide pixels are half as wide, so it's square on screen)
+  reg [9:0] bx;
   reg [7:0] by;
   reg       dx, dy;
   reg [5:0] frames;
@@ -41,12 +42,12 @@ module colorbars #(
   always @(posedge clk) begin
     btn_s <= {btn_s[1:0], USER_BTN};
     if (rst) begin
-      bx <= 9'd20; by <= 8'd20; dx <= 1'b1; dy <= 1'b1; frames <= 6'd0;
+      bx <= 10'd40; by <= 8'd20; dx <= 1'b1; dy <= 1'b1; frames <= 6'd0;
     end else if (frame_start) begin
       frames <= frames + 6'd1;
       if (btn_s[2]) begin
-        if (dx) begin if (bx >= 9'd333) dx <= 1'b0; bx <= bx + 9'd2; end
-        else    begin if (bx <= 9'd3)   dx <= 1'b1; bx <= bx - 9'd2; end
+        if (dx) begin if (bx >= 10'd666) dx <= 1'b0; bx <= bx + 10'd4; end
+        else    begin if (bx <= 10'd6)   dx <= 1'b1; bx <= bx - 10'd4; end
         if (dy) begin if (by >= 8'd213) dy <= 1'b0; by <= by + 8'd1; end
         else    begin if (by <= 8'd2)   dy <= 1'b1; by <= by - 8'd1; end
       end
@@ -55,8 +56,8 @@ module colorbars #(
 
   wire [7:0] pat;
   test_pattern u_pat (.x(px), .y(py), .c(pat));
-  wire in_box  = (px >= bx) && (px < bx + 9'd24) && (py >= by) && (py < by + 8'd24);
-  wire box_rim = in_box && (px < bx + 9'd2 || px >= bx + 9'd22 || py < by + 8'd2 || py >= by + 8'd22);
+  wire in_box  = (px >= bx) && (px < bx + 10'd48) && (py >= by) && (py < by + 8'd24);
+  wire box_rim = in_box && (px < bx + 10'd4 || px >= bx + 10'd44 || py < by + 8'd2 || py >= by + 8'd22);
   wire [7:0] pix = box_rim ? 8'h00 : in_box ? 8'hF8 : pat;   // orange box, black rim
 
   ntsc_encoder #(.LUT_FILE(LUT_FILE)) u_enc (

@@ -3,7 +3,7 @@
 //
 // The memory only has three jobs, so the controller is a fixed, simple
 // sequencer instead of a general-purpose one:
-//   1. line fetch: read one picture line (180 words = 360 pixels) into the
+//   1. line fetch: read one picture line (360 words = 720 pixels) into the
 //      line buffer, once per video line
 //   2. refresh: one AUTO REFRESH every REF_INTERVAL clocks
 //   3. pixel writes: drain the write FIFO in batches, one byte per clock,
@@ -12,8 +12,8 @@
 // so all banks are idle between operations. Burst length is 1: one READ or
 // WRITE command per clock, which keeps the bookkeeping trivial.
 //
-// Clocking: the SDRAM clock pin gets the system clock shifted 180 degrees
-// (PLL c1). Commands change on the rising system edge and are sampled by the
+// Clocking: the SDRAM clock pin gets the system clock shifted 6.73 ns
+// (PLL c1, see common/pll_57m.v). Commands change on the rising system edge and are sampled by the
 // SDRAM half a clock later. Read data is captured on the FALLING system edge
 // (the middle of the data-valid window for CL=2/3 at this clock rate) and then
 // re-registered on the rising edge. Result: read data for a READ issued at
@@ -43,21 +43,23 @@
 //             elif fifo_has_work: send(ACT, row); wait(T_RCD); state = WRITE
 //         elif state == READ:
 //             send(READ, col); col += 1
-//             if col == 180: state = DRAIN      # then PRECHARGE, back to IDLE
+//             if col == 256: PRECHARGE, open the line's 2nd row, read 104 more
+//             then DRAIN, PRECHARGE, back to IDLE
 //         ...
 // `go_wait(n, next)` is the wait(): it parks in S_WAIT so the next command
 // goes out exactly n clocks after this one.
 module sdram_ctrl #(
   parameter CL           = 2,       // CAS latency (2 or 3; both fine at 57 MHz)
   parameter INIT_WAIT    = 14000,   // NOP clocks after power-up (>= 200 us = 11455)
-  parameter REF_INTERVAL = 700,     // clocks per refresh: 12.2 us, so even a refresh delayed by
-                                    // a line fetch + write batch stays under the 15.6 us spec
+  parameter REF_INTERVAL = 560,     // clocks per refresh: 9.8 us. A refresh can wait behind one
+                                    // half-line fetch (~4.6 us) or a write batch, and must still
+                                    // land within the 15.6 us spec (sim/sdram_model.v checks it)
   parameter T_RP         = 3,       // clocks from PRECHARGE to next command (>= 20 ns)
   parameter T_RCD        = 3,       // ACTIVE to READ/WRITE (>= 20 ns)
   parameter T_RFC        = 6,       // REFRESH to next command (>= 70 ns)
   parameter T_MRD        = 3,       // MODE REGISTER SET to next command
   parameter T_WR         = 3,       // last WRITE to PRECHARGE (>= 15 ns or 2 clk)
-  parameter LINE_WORDS   = 180,
+  parameter LINE_WORDS   = 360,     // words per picture line (720 pixels); spans 2 SDRAM rows
   parameter BATCH_MIN    = 32,      // start a write batch at this many queued bytes...
   parameter AGE_MAX      = 400,     // ...or when the oldest byte has waited this long
   parameter BATCH_MAX    = 128      // longest write batch (bounds refresh/fetch latency)
@@ -73,13 +75,15 @@ module sdram_ctrl #(
   output reg         fetch_overrun, // sticky: a request came before the last one finished
   input  wire        clear_err,
   output reg         lb_we,
-  output reg  [8:0]  lb_waddr,
+  output reg  [9:0]  lb_waddr,
   output reg  [15:0] lb_wdata,
 
-  // write FIFO (first-word-fall-through): {buf, line[7:0], col[7:0], hi, byte[7:0]}
+  // write FIFO (first-word-fall-through): {buf, line[7:0], word[8:0], hi, byte[7:0]}
+  // Memory map: SDRAM row = {buf, line, word[8]}, column = word[7:0], so each
+  // 720-pixel line takes two 256-word rows (the second one 104 words used).
   input  wire        wf_empty,
   input  wire [9:0]  wf_count,
-  input  wire [25:0] wf_head,
+  input  wire [26:0] wf_head,
   output wire        wf_pop,        // combinational: pops in the same clock as the WRITE
   input  wire        wf_flush,      // drain now (a buffer swap is waiting)
   output wire        wr_busy,
@@ -96,6 +100,7 @@ module sdram_ctrl #(
 );
   localparam RD_LAT = CL + 1;
   localparam [2:0] CL3 = CL;
+  localparam [7:0] LAST_COL2 = LINE_WORDS - 257;   // last column used in a line's second row (103)
 
   // commands {cs_n, ras_n, cas_n, we_n}
   localparam CMD_NOP   = 4'b0111;
@@ -119,6 +124,7 @@ module sdram_ctrl #(
   localparam S_RD_DRAIN = 4'd7;
   localparam S_WRITE    = 4'd8;
   localparam S_PRE      = 4'd9;
+  localparam S_ACT2     = 4'd10;
 
   reg [3:0]  state, after;
   reg [15:0] wait_cnt;
@@ -188,7 +194,7 @@ module sdram_ctrl #(
     else if (age != 10'h3FF) age <= age + 10'd1;
   end
   wire       wr_go   = !wf_empty && (wf_count >= BATCH_MIN || age >= AGE_MAX || wf_flush);
-  wire [8:0] head_row = wf_head[25:17];
+  wire [9:0] head_row = wf_head[26:17];   // {buf, line, word[8]}
 
   // ---- read tag pipeline: which column each returning word belongs to -----
   // Read data comes back RD_LAT clocks after its READ command. So each READ
@@ -196,11 +202,14 @@ module sdram_ctrl #(
   // like a fixed-length deque); when it falls off the end, the data arriving
   // at that moment belongs to that column and goes into the line buffer.
   reg [RD_LAT:0] rd_v;
-  reg [7:0]      rd_col [0:RD_LAT];
+  reg [8:0]      rd_col [0:RD_LAT];     // word index {row half, column}
   integer i;
 
   reg [7:0]  col;
-  reg [8:0]  cur_row;
+  reg        seg;        // which of the line's two SDRAM rows is being read
+  reg        fetching;   // a line fetch is in progress (second row still to come)
+  reg [8:0]  fetch_rowl; // {buf, line} of the line being fetched
+  reg [9:0]  cur_row;
   reg        cur_half;
   reg [7:0]  batch_n;
   reg        writing;
@@ -239,7 +248,7 @@ module sdram_ctrl #(
 
     // returning read data -> line buffer
     rd_v[0]   <= 1'b0;
-    rd_col[0] <= col;
+    rd_col[0] <= {seg, col};
     for (i = 1; i <= RD_LAT; i = i + 1) begin
       rd_v[i]   <= rd_v[i-1];
       rd_col[i] <= rd_col[i-1];
@@ -254,6 +263,8 @@ module sdram_ctrl #(
       init_done <= 1'b0;
       init_refs <= 4'd0;
       writing   <= 1'b0;
+      fetching  <= 1'b0;
+      seg       <= 1'b0;
       rd_v      <= {(RD_LAT+1){1'b0}};
       lb_we     <= 1'b0;
       sd_ba     <= 2'b00;
@@ -290,17 +301,20 @@ module sdram_ctrl #(
             ref_take <= 1'b1;
             go_wait(T_RFC, S_IDLE);
           end else if (fetch_pend) begin
-            issue(CMD_ACT);
+            issue(CMD_ACT);                   // first row of the line: words 0..255
             sd_ba      <= 2'b00;
-            sd_a       <= {3'b000, f_row};
+            sd_a       <= {2'b00, f_row, 1'b0};
+            fetch_rowl <= f_row;
             cur_half   <= f_half;
             fetch_take <= 1'b1;
+            fetching   <= 1'b1;
+            seg        <= 1'b0;
             col        <= 8'd0;
             go_wait(T_RCD, S_READ);
           end else if (wr_go) begin
             issue(CMD_ACT);
             sd_ba   <= 2'b00;
-            sd_a    <= {3'b000, head_row};
+            sd_a    <= {2'b00, head_row};
             cur_row <= head_row;
             batch_n <= 8'd0;
             writing <= 1'b1;
@@ -308,13 +322,13 @@ module sdram_ctrl #(
           end
         end
 
-        // one READ per clock, columns 0..LINE_WORDS-1
+        // one READ per clock: row 0 columns 0..255, then row 1 columns 0..LINE_WORDS-257
         S_READ: begin
           issue(CMD_READ);
           sd_a      <= {4'b0000, col};      // A10 = 0: no auto-precharge
           rd_v[0]   <= 1'b1;
-          rd_col[0] <= col;
-          if (col == LINE_WORDS - 1) begin
+          rd_col[0] <= {seg, col};
+          if (seg == 1'b0 ? (col == 8'd255) : (col == LAST_COL2)) begin
             wait_cnt <= RD_LAT + 1;
             state    <= S_RD_DRAIN;
           end else begin
@@ -343,7 +357,27 @@ module sdram_ctrl #(
         S_PRE: begin
           issue(CMD_PRE);
           sd_a[10] <= 1'b1;
-          go_wait(T_RP, S_IDLE);
+          // after the line's first row, open its second row; otherwise done
+          if (fetching && seg == 1'b0) go_wait(T_RP, S_ACT2);
+          else begin
+            fetching <= 1'b0;
+            go_wait(T_RP, S_IDLE);
+          end
+        end
+
+        S_ACT2: begin                       // second row of the line: words 256..
+          if (ref_pending != 4'd0) begin     // a refresh is due: do it between the two rows
+            issue(CMD_REF);
+            ref_take <= 1'b1;
+            go_wait(T_RFC, S_ACT2);
+          end else begin
+          issue(CMD_ACT);
+          sd_ba <= 2'b00;
+          sd_a  <= {2'b00, fetch_rowl, 1'b1};
+          seg   <= 1'b1;
+          col   <= 8'd0;
+          go_wait(T_RCD, S_READ);
+          end
         end
 
         S_WAIT: begin

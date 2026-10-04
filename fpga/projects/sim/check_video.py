@@ -50,10 +50,15 @@ def write_hex(path, values):
 
 def make_inputs():
     os.makedirs(OUT, exist_ok=True)
-    w, h, img1 = read_ppm(os.path.join(DASH_PPM, "w360_1_DUAL_1850.ppm"))
-    assert (w, h) == (W, H)
+    # a real 360-wide dashboard frame, each pixel doubled to 720 wide, plus a
+    # column of single-pixel stripes so 1-pixel detail is exercised too
+    w, h, img360 = read_ppm(os.path.join(DASH_PPM, "w360_1_DUAL_1850.ppm"))
+    img1 = [img360[y * 360 + x // 2] for y in range(H) for x in range(W)]
+    for y in range(H):
+        for x in range(700, 716):
+            img1[y * W + x] = 0xFF if x % 2 else 0xE0
     w, h, diag = read_ppm(os.path.join(DASH_PPM, "w360_3_DIAG_1110.ppm"))
-    rect = [diag[(y + 60) * W + x + 40] for y in range(40) for x in range(100)]
+    rect = [diag[(y + 60) * 360 + x + 40] for y in range(40) for x in range(100)]
     write_hex(os.path.join(OUT, "img1.hex"), img1)
     write_hex(os.path.join(OUT, "rect.hex"), rect)
     print("wrote img1.hex (%d px, %d colours) and rect.hex" % (len(img1), len(set(img1))))
@@ -67,12 +72,12 @@ def expected_images():
     bist = [ntsc.pattern(x, y) for y in range(H) for x in range(W)]
     img2 = list(bist)   # back buffer for the 2nd swap is buffer 0 = self test
     for y in range(211, 240):
-        for x in range(301, 360):
-            img2[y * W + x] = rect[(y - 211) * 100 + (x - 301)]
-    bars = list(bist)   # colorbars design: pattern + orange box (black rim) at 20,20
+        for x in range(661, 720):
+            img2[y * W + x] = rect[(y - 211) * 100 + (x - 661)]
+    bars = list(bist)   # colorbars design: pattern + orange 48x24 box (black rim) at 40,20
     for y in range(20, 44):
-        for x in range(20, 44):
-            rim = x < 22 or x >= 42 or y < 22 or y >= 42
+        for x in range(40, 88):
+            rim = x < 44 or x >= 84 or y < 22 or y >= 42
             bars[y * W + x] = 0x00 if rim else 0xF8
     return {"bist": bist, "img1": img1, "img2": img2, "bars": bars}
 
@@ -150,7 +155,7 @@ def check_capture(path, image, png_path):
             elif v >= ntsc.FIRST_LINE and ntsc.ACTIVE_START <= h < ntsc.ACTIVE_START + ntsc.ACTIVE_LEN:
                 if v not in p0:
                     continue
-                x, y = (h - ntsc.ACTIVE_START) // 2, v - ntsc.FIRST_LINE
+                x, y = h - ntsc.ACTIVE_START, v - ntsc.FIRST_LINE
                 exp = LUT[image[y * W + x] * 4 + (p0[v] + h) % 4]
                 kind = "picture"
             else:
@@ -168,13 +173,13 @@ def check_capture(path, image, png_path):
         v = y + ntsc.FIRST_LINE
         base = line0 + v * SPL
         for x in range(W):
-            h0 = ntsc.ACTIVE_START + 2 * x - 1
+            h0 = min(max(ntsc.ACTIVE_START + x - 1, ntsc.ACTIVE_START), ntsc.ACTIVE_START + W - 4)
             win = {}
             for h in range(h0, h0 + 4):
                 win[(p0.get(v, 0) + h) % 4] = s[base + h]
             rgb = ntsc.decode(win[0], win[1], win[2], win[3])
             decoded.append(rgb)
-            if 0 < x < W - 1 and image[y * W + x - 1] == image[y * W + x] == image[y * W + x + 1]:
+            if 0 < x < W - 2 and len(set(image[y * W + x - 1: y * W + x + 3])) == 1:
                 ref = ntsc.rgb332(image[y * W + x])
                 errs.append(max(abs(a - b) for a, b in zip(rgb, ref)))
     errs.sort()

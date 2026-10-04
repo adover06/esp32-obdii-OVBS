@@ -21,9 +21,13 @@ using Datum = lgfx::textdatum_t;
 
 // ---- screen geometry ---------------------------------------------------------
 constexpr int H = 240;          // always 240 lines (one NTSC field)
-constexpr int MAX_W = 360;
-static int W = 360;             // 240 on a WROOM (RAM), 360 with PSRAM
+constexpr int MAX_W = 720;
+static int W = 360;             // 720 with the FPGA video card; 240/360 with direct video
 static bool NARROW = false;     // W < 300: compact layouts
+// Horizontal text/shape scale. Layouts are designed in 360-wide units; at 720
+// each pixel is half as wide on screen, so text is drawn 2x wider to keep its
+// shape (arcs, needles and curves still get the full 720-pixel detail).
+static float XS = 1.0f;
 static float PX_ASPECT = 0.889f;  // displayed width / height of ONE pixel
 
 // displayAspect: shape of the screen the picture fills (4:3 for a normal
@@ -32,10 +36,14 @@ static void setScreen(int w, float displayAspect)
 {
   W = w;
   NARROW = w < 300;
+  XS = w >= 720 ? 2.0f : 1.0f;
   PX_ASPECT = displayAspect * H / w;
 }
 
-static int margin() { return NARROW ? 5 : 8; }
+// A horizontal position/width written in 360-wide units, scaled to this width.
+static int X(float v) { return (int)(v * XS + (v < 0 ? -0.5f : 0.5f)); }
+
+static int margin() { return NARROW ? 5 : X(8); }
 
 // A circle that should LOOK round is an ellipse in pixels: x radius = y radius / pixel aspect.
 static float rx(float ry) { return ry / PX_ASPECT; }
@@ -50,9 +58,9 @@ constexpr float RAD2DEG = 57.2957795f;
 // color steps through yellow and orange sooner, and everything turns red and
 // flashes from SHIFT_RPM up.
 constexpr float RPM_MAX     = 6000;   // full scale of dials and shift bars
-constexpr float YELLOW_RPM  = 3200;   // green -> yellow
-constexpr float ORANGE_RPM  = 4000;   // yellow -> orange
-constexpr float SHIFT_RPM   = 4600;   // red + flashing shift light
+constexpr float YELLOW_RPM  = 2600;   // green -> yellow
+constexpr float ORANGE_RPM  = 3200;   // yellow -> orange
+constexpr float SHIFT_RPM   = 3800;   // red + flashing shift light
 constexpr float IDLE_RPM    = 780;
 // simulator only: mph per 1000 rpm in each gear (index 0 = neutral)
 constexpr float GEAR_MPH_PER_K[6] = { 0, 5.6f, 10.1f, 14.6f, 19.6f, 24.3f };
@@ -302,7 +310,7 @@ static void txt(Gfx& g, const char* s, int x, int y, uint8_t color,
                 const lgfx::IFont* font = &fonts::Font0, Datum datum = Datum::top_left, float size = 1)
 {
   g.setFont(font);
-  g.setTextSize(size);
+  g.setTextSize(size * XS, size);
   g.setTextDatum(datum);
   g.setTextColor(color);
   g.drawString(s, x, y);
@@ -405,7 +413,7 @@ static void panel(Gfx& g, int x, int y, int w, int h, const char* title, uint8_t
   g.drawFastHLine(x + w - c, y + h - 1, c, accent); g.drawFastVLine(x + w - 1, y + h - c, c, accent);
   if (title && *title) {
     g.setFont(&fonts::Font0);
-    g.setTextSize(1);
+    g.setTextSize(XS, 1);
     int tw = g.textWidth(title);
     g.fillRect(x + 6, y - 3, tw + 6, 8, (uint8_t)BG);
     txt(g, title, x + 9, y - 3, accent);
@@ -454,31 +462,31 @@ static void header(Gfx& g, int idx, int count, const char* name, const Telemetry
 {
   g.fillRect(0, 0, W, 13, (uint8_t)PANEL);
   g.drawFastHLine(0, 13, W, (uint8_t)GRID);
-  g.fillRect(0, 0, 3, 13, (uint8_t)CYAN);
+  g.fillRect(0, 0, X(3), 13, (uint8_t)CYAN);
 
   int dotsX;
   if (NARROW) {
     txt(g, name, 7, 3, WHITE);                       // no room for the brand
     dotsX = 44;
   } else {
-    txt(g, "FOCUS//SE", 8, 3, CYAN);
-    txt(g, name, 70, 3, WHITE);
-    dotsX = W / 2 - count * 5 + 18;
+    txt(g, "FOCUS//SE", X(8), 3, CYAN);
+    txt(g, name, X(70), 3, WHITE);
+    dotsX = W / 2 + X(18 - count * 5);
   }
-  int pitch = NARROW ? 7 : 10;
+  int pitch = NARROW ? 7 : X(10);
   for (int i = 0; i < count; i++) {
     int px = dotsX + i * pitch;
-    if (i == idx) g.fillRect(px, 4, 5, 5, (uint8_t)CYAN);
-    else g.drawRect(px, 4, 5, 5, (uint8_t)DIM);
+    if (i == idx) g.fillRect(px, 4, X(5), 5, (uint8_t)CYAN);
+    else g.drawRect(px, 4, X(5), 5, (uint8_t)DIM);
   }
 
   char buf[24];
   int m = (int)(t.clock / 60), s = (int)t.clock % 60;
   snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
-  txt(g, buf, W - 4, 3, TEXT, &fonts::Font0, Datum::top_right);
-  int tagRight = W - 40;
+  txt(g, buf, W - X(4), 3, TEXT, &fonts::Font0, Datum::top_right);
+  int tagRight = W - X(40);
   txt(g, t.sourceTag, tagRight, 3, t.sourceColor, &fonts::Font0, Datum::top_right);
-  if ((ms / 500) % 2) g.fillRect(tagRight - g.textWidth(t.sourceTag) - 7, 5, 4, 4, t.sourceColor);
+  if ((ms / 500) % 2) g.fillRect(tagRight - g.textWidth(t.sourceTag) - X(7), 5, X(4), 4, t.sourceColor);
 }
 
 // ---- screen 6: ARC -----------------------------------------------------------
@@ -523,7 +531,7 @@ static void drawArc(Gfx& g, const Telemetry& s, uint32_t ms)
   txt(g, buf, cx, cy + 66, d.gear ? CYAN : YELLOW, &fonts::AsciiFont24x48, Datum::middle_center);
 
   // left: throttle + load vertical meters
-  const int lw = NARROW ? 10 : 14, l1 = M + (NARROW ? 3 : 8), l2 = l1 + lw + (NARROW ? 8 : 13);
+  const int lw = NARROW ? 10 : X(14), l1 = M + (NARROW ? 3 : X(8)), l2 = l1 + lw + (NARROW ? 8 : X(13));
   txt(g, "THR", l1 + lw / 2, 24, DIM, &fonts::Font0, Datum::top_center);
   txt(g, NARROW ? "LD" : "LOAD", l2 + lw / 2, 24, DIM, &fonts::Font0, Datum::top_center);
   segVBar(g, l1, 36, lw, 170, d.throttle / 100, zoneMag);
@@ -534,7 +542,7 @@ static void drawArc(Gfx& g, const Telemetry& s, uint32_t ms)
   txt(g, buf, l2 + lw / 2, 212, TEXT, &fonts::Font0, Datum::top_center);
 
   // right: speed + small stats
-  const int R = W - M, colW = NARROW ? 40 : 52;
+  const int R = W - M, colW = NARROW ? 40 : X(52);
   txt(g, "SPEED", R, 22, DIM, &fonts::Font0, Datum::top_right);
   snprintf(buf, sizeof(buf), "%d", (int)(d.mph + 0.5f));
   if (NARROW) txt(g, buf, R, 32, WHITE, &fonts::AsciiFont8x16, Datum::top_right);
@@ -573,13 +581,13 @@ static void drawBoot(Gfx& g, uint32_t ms, const char* modeLine)
     "READY",
   };
   const int n = sizeof(lines) / sizeof(lines[0]);
-  const int x = NARROW ? 12 : 24;
+  const int x = NARROW ? 12 : X(24);
   int shown = (int)(ms / 180);
   if (shown > n) shown = n;
   for (int i = 0; i < shown; i++) {
     txt(g, lines[i], x, 50 + i * 20, i == 0 ? CYAN : i == n - 1 ? GREEN : TEXT, &fonts::AsciiFont8x16);
   }
-  if ((ms / 300) % 2) g.fillRect(x, 50 + shown * 20, 8, 16, (uint8_t)CYAN);
+  if ((ms / 300) % 2) g.fillRect(x, 50 + shown * 20, X(8), 16, (uint8_t)CYAN);
 }
 
 // ---- screen 7: DIAG -----------------------------------------------------------
@@ -600,12 +608,12 @@ static void drawDiag(Gfx& g, const Telemetry& s, uint32_t ms)
   txt(g, b, M, 47, TEXT);
 
   // columns: name | reading | status | age
-  const int readR = NARROW ? 136 : 196, statX = NARROW ? 142 : 204, ageR = W - M;
+  const int readR = NARROW ? 136 : X(196), statX = NARROW ? 142 : X(204), ageR = W - M, okR = X(292);
   txt(g, "VALUE", M, 58, DIM);
   txt(g, "READING", readR, 58, DIM, &fonts::Font0, Datum::top_right);
   txt(g, "STATUS", statX, 58, DIM);
   txt(g, "AGE", ageR, 58, DIM, &fonts::Font0, Datum::top_right);
-  if (!NARROW) txt(g, "OK%", 292, 58, DIM, &fonts::Font0, Datum::top_right);
+  if (!NARROW) txt(g, "OK%", okR, 58, DIM, &fonts::Font0, Datum::top_right);
   g.drawFastHLine(M, 67, W - 2 * M, (uint8_t)GRID);
 
   for (int i = 0; i < s.readingCount; i++) {
@@ -626,7 +634,7 @@ static void drawDiag(Gfx& g, const Telemetry& s, uint32_t ms)
       uint32_t tries = r.okCount + r.errCount;   // success rate of this value
       if (tries) {
         snprintf(b, sizeof(b), "%u", (unsigned)(r.okCount * 100 / tries));
-        txt(g, b, 292, y, r.okCount * 10 >= tries * 9 ? TEXT : ORANGE, &fonts::Font2, Datum::top_right);
+        txt(g, b, okR, y, r.okCount * 10 >= tries * 9 ? TEXT : ORANGE, &fonts::Font2, Datum::top_right);
       }
     }
   }
@@ -645,13 +653,14 @@ static void drawDiag(Gfx& g, const Telemetry& s, uint32_t ms)
 static void sysRow(Gfx& g, int y, const char* label, const char* value, uint8_t color = TEXT)
 {
   txt(g, label, margin(), y, DIM);
-  txt(g, value, NARROW ? 70 : 96, y, color);
+  txt(g, value, NARROW ? 70 : X(96), y, color);
 }
 
 static void sysSection(Gfx& g, int y, const char* title)
 {
   txt(g, title, margin(), y, CYAN);
-  g.drawFastHLine(margin() + (int)strlen(title) * 6 + 4, y + 3, W - 2 * margin() - (int)strlen(title) * 6 - 4, (uint8_t)GRID);
+  int x0 = margin() + X(strlen(title) * 6 + 4);
+  g.drawFastHLine(x0, y + 3, W - margin() - x0, (uint8_t)GRID);
 }
 
 static void fmtDuration(char* out, size_t n, uint32_t ms)

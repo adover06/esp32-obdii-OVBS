@@ -1,6 +1,6 @@
 // MAX1000 composite video card for the ESP32 dashboard.
 //
-//   ESP32 --SPI--> parser --> write FIFO --> SDRAM (2 x 360x240 frame buffers)
+//   ESP32 --SPI--> parser --> write FIFO --> SDRAM (2 x 720x240 frame buffers)
 //   SDRAM --line fetch--> line buffer --> NTSC encoder --> 6-bit R-2R DAC --> TV
 //
 // The ESP32 draws a frame in bands and sends them with 'W' commands into the
@@ -54,7 +54,7 @@ module video_card #(
   input  wire        USER_BTN,       // low when pressed
   output wire [7:0]  LED,
 
-  output wire [5:0]  DAC,            // PMOD PIO1 (LSB) .. PIO6 (MSB)
+  output wire [5:0]  DAC,            // MKR J2 pins 1,2,3,4,5,8 = D6..D10, D13 (bit 0 = LSB on D6)
 
   input  wire        SPI_SCK,        // MKR D0
   input  wire        SPI_MOSI,       // MKR D1
@@ -92,7 +92,8 @@ module video_card #(
   // and if picture, which pixel (px, py). See common/video_timing.v.
   wire [1:0] sub, ph;
   wire [9:0] h;
-  wire [8:0] v, px;
+  wire [8:0] v;
+  wire [9:0] px;
   wire [7:0] py;
   wire       sample_end, line_start, frame_start, vsync_tip, burst, active;
   video_timing u_tim (
@@ -107,11 +108,11 @@ module video_card #(
   // The controller (sdram_ctrl.v) does three jobs: fetch a line for the TV,
   // write pixels from the FIFO, and refresh (SDRAM forgets without it).
   wire        init_done, fetch_overrun, lb_we, wr_busy, wf_pop;
-  wire [8:0]  lb_waddr;
+  wire [9:0]  lb_waddr;
   wire [15:0] lb_wdata;
   wire        wf_empty, wf_full, wf_overflow;
   wire [9:0]  wf_count;
-  wire [25:0] wf_head;
+  wire [26:0] wf_head;
   reg         fetch_req;
   reg  [8:0]  fetch_row;
   reg         fetch_half;
@@ -147,16 +148,16 @@ module video_card #(
     end
   end
 
-  // ---- line buffer: 2 lines x 180 words, written by the SDRAM, read by video
+  // ---- line buffer: 2 lines x 360 words, written by the SDRAM, read by video
   // A small on-chip RAM, like a list of 512 16-bit ints. Half 0 holds even
   // picture lines, half 1 odd ones: while the TV reads one half, the SDRAM
   // fills the other with the next line (ping-pong). Each 16-bit word holds two
   // pixels: the even-x pixel in the low byte, the odd-x pixel in the high byte.
-  reg [15:0] lbuf [0:511];
+  reg [15:0] lbuf [0:1023];
   reg [15:0] lb_q;
   always @(posedge clk) begin
     if (lb_we) lbuf[lb_waddr] <= lb_wdata;
-    lb_q <= lbuf[{py[0], px[8:1]}];
+    lb_q <= lbuf[{py[0], px[9:1]}];
   end
   wire [7:0] pix = px[0] ? lb_q[15:8] : lb_q[7:0];
 
@@ -184,7 +185,7 @@ module video_card #(
 
   reg bist_done;
   wire        p_push, swap_cmd;
-  wire [25:0] p_data;
+  wire [26:0] p_data;
   cmd_parser u_parse (
     .clk(clk), .rst(rst), .enable(bist_done), .back(~front),
     .byte_valid(byte_valid), .byte_data(byte_data), .byte_first(byte_first),
@@ -216,14 +217,14 @@ module video_card #(
   // ---- self test: fill both buffers with the pattern -----------------------
   // At power-up, (bx, by) walks over every pixel of buffer 0, then buffer 1,
   // pushing the test-pattern colour into the write FIFO, like:
-  //     for buf in (0, 1): for y in range(240): for x in range(360): push(...)
+  //     for buf in (0, 1): for y in range(240): for x in range(720): push(...)
   // except one pixel per clock tick, pausing whenever the FIFO is full.
   reg       bist_run, bist_buf;
   reg [3:0] idle_cnt;   // clocks the FIFO and writer have been idle (saturates at 8)
   always @(posedge clk)
     if (rst || !wf_empty || wr_busy || bist_run) idle_cnt <= 4'd0;
     else if (!idle_cnt[3]) idle_cnt <= idle_cnt + 4'd1;
-  reg [8:0] bx;
+  reg [9:0] bx;
   reg [7:0] by;
   wire [7:0] bist_pix;
   test_pattern u_bpat (.x(bx), .y(by), .c(bist_pix));
@@ -233,25 +234,25 @@ module video_card #(
       bist_run  <= 1'b0;
       bist_done <= 1'b0;
       bist_buf  <= 1'b0;
-      bx <= 9'd0; by <= 8'd0;
+      bx <= 10'd0; by <= 8'd0;
     end else if (!bist_done) begin
       if (!bist_run) begin
         if (bist_buf && idle_cnt[3]) bist_done <= 1'b1;   // everything written
         else if (init_done && !bist_buf && bx == 0 && by == 0) bist_run <= 1'b1;
       end else if (!wf_full) begin
-        if (bx == 9'd359) begin
-          bx <= 9'd0;
+        if (bx == 10'd719) begin
+          bx <= 10'd0;
           if (by == 8'd239) begin
             by <= 8'd0;
             if (bist_buf) bist_run <= 1'b0;
             bist_buf <= 1'b1;
           end else by <= by + 8'd1;
-        end else bx <= bx + 9'd1;
+        end else bx <= bx + 10'd1;
       end
     end
   end
   wire        b_push = bist_run && !wf_full;
-  wire [25:0] b_data = {bist_buf, by, bx[8:1], bx[0], bist_pix};
+  wire [26:0] b_data = {bist_buf, by, bx[9:1], bx[0], bist_pix};
 
   // The write FIFO is a queue (like collections.deque) between the pixel
   // sources and the SDRAM: the self test feeds it first, then the ESP32.
@@ -296,20 +297,20 @@ module video_card #(
   // verify_err (LED8) and it stays set: that would mean SDRAM timing trouble.
   reg  [7:0] chk_line;
   wire [7:0] exp_lo, exp_hi;
-  test_pattern u_clo (.x({lb_waddr[7:0], 1'b0}), .y(chk_line), .c(exp_lo));
-  test_pattern u_chi (.x({lb_waddr[7:0], 1'b1}), .y(chk_line), .c(exp_hi));
+  test_pattern u_clo (.x({lb_waddr[8:0], 1'b0}), .y(chk_line), .c(exp_lo));
+  test_pattern u_chi (.x({lb_waddr[8:0], 1'b1}), .y(chk_line), .c(exp_hi));
   always @(posedge clk) if (fetch_req) chk_line <= next_line[7:0];
 
   reg verify_err;
-  reg [15:0] verify_words;
+  reg [23:0] verify_words;   // words checked (debug/sim only; a 720-wide frame is 86,400)
   always @(posedge clk) begin
     if (rst) begin
       verify_err   <= 1'b0;
-      verify_words <= 16'd0;
+      verify_words <= 24'd0;
     end else begin
       if (clear_err) verify_err <= 1'b0;
       if (lb_we && checking) begin
-        verify_words <= verify_words + 16'd1;
+        verify_words <= verify_words + 24'd1;
         if (lb_wdata != {exp_hi, exp_lo}) verify_err <= 1'b1;
       end
     end

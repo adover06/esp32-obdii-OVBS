@@ -15,6 +15,7 @@
 !/dash_preview_app/
 !/dash_previews/
 !/esp32_fpga_test/
+!/esp32_shift_light_test/
 !/fpga/
 
 # FPGA: Quartus installers, build output, simulation output, vendor docs

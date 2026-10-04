@@ -5,7 +5,7 @@
 // ESP32's DMA.
 //   'W' (0x57)  + x, y, w, h (16-bit little endian each) + w*h pixel bytes,
 //               row by row. Writes the rectangle into the back buffer;
-//               anything outside 360x240 is dropped. Extra bytes are ignored.
+//               anything outside 720x240 is dropped. Extra bytes are ignored.
 //   'S' (0x53)  show the back buffer at the next vertical blank. Poll the
 //               READY pin / status flag before drawing the next frame.
 //   anything else (e.g. 'Q' status read, 'X' link test) is ignored, but its
@@ -18,7 +18,7 @@
 //     elif state == "HDR":            # 3 padding bytes, then x, y, w, h
 //         collect header; when done: cx, cy = x, y; state = "PIX"
 //     elif state == "PIX" and cy < y + h:
-//         if cx < 360 and cy < 240: fifo.push((back_buf, cy, cx, byte))
+//         if cx < 720 and cy < 240: fifo.push((back_buf, cy, cx, byte))
 //         cx += 1
 //         if cx == x + w: cx = x; cy += 1    # next row of the rectangle
 module cmd_parser (
@@ -30,7 +30,7 @@ module cmd_parser (
   input  wire [7:0]  byte_data,
   input  wire        byte_first,
   output reg         push,
-  output reg  [25:0] push_data,    // {buf, line, col[7:0], hi, byte}
+  output reg  [26:0] push_data,    // {buf, line, word[8:0], hi, byte}  (word = x / 2)
   output reg         swap_cmd
 );
   localparam ST_IDLE = 2'd0, ST_HDR = 2'd1, ST_PIX = 2'd2;
@@ -42,7 +42,7 @@ module cmd_parser (
   reg        buf_sel;
 
   wire in_rect = (cy < y_end);
-  wire on_pic  = (cx < 17'd360) && (cy < 17'd240);
+  wire on_pic  = (cx < 17'd720) && (cy < 17'd240);
 
   always @(posedge clk) begin
     push     <= 1'b0;
@@ -86,7 +86,7 @@ module cmd_parser (
             if (in_rect) begin
               if (on_pic && enable) begin
                 push      <= 1'b1;
-                push_data <= {buf_sel, cy[7:0], cx[8:1], cx[0], byte_data};
+                push_data <= {buf_sel, cy[7:0], cx[9:1], cx[0], byte_data};
               end
               if (cx + 17'd1 == x_end) begin
                 cx <= {1'b0, x0};

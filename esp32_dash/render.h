@@ -14,20 +14,25 @@
 // desktop preview checks this under AddressSanitizer.)
 //
 // Drawing callbacks must be stateless: they run once per band.
+//
+// With the MAX1000 video card, bands go to the FPGA over SPI instead (renderTo).
 #pragma once
 
 class StripRenderer {
 public:
   static constexpr int STRIP_H = 24;   // 240 / 24 = 10 bands per frame
 
-  // target = the TV (or a desktop window). Returns false if out of memory.
-  bool begin(lgfx::LovyanGFX* target, int width, int height)
+  // target = the TV (or a desktop window), or nullptr when bands go to a sink
+  // (the FPGA). buffers = 2 lets the next band be drawn while the previous one
+  // is still being sent by DMA. Returns false if out of memory.
+  bool begin(lgfx::LovyanGFX* target, int width, int height, int buffers = 1)
   {
     _target = target;
     _w = width;
     _h = height;
+    _n = buffers < 1 ? 1 : buffers > 2 ? 2 : buffers;
     size_t bytes = (size_t)width * STRIP_H;
-    // Guard bytes on each side of the strip catch drawing that escapes the
+    // Guard bytes on each side of every strip catch drawing that escapes the
     // clip rectangle. Test builds (STRIP_GUARD) use a whole frame on each side
     // so every stray write is caught; the ESP32 uses 64 bytes as an alarm.
 #ifdef STRIP_GUARD
@@ -35,11 +40,19 @@ public:
 #else
     _guardBytes = 64;
 #endif
-    _alloc = (uint8_t*)malloc(_guardBytes * 2 + bytes);
-    if (!_alloc) return false;
-    memset(_alloc, GUARD, _guardBytes * 2 + bytes);
-    _buf = _alloc + _guardBytes;
-    memset(_buf, 0, bytes);
+    for (int i = 0; i < _n; i++) {
+      size_t total = _guardBytes * 2 + bytes;
+#ifdef ESP_PLATFORM
+      _alloc[i] = (uint8_t*)heap_caps_malloc(total, MALLOC_CAP_DMA);   // SPI DMA can only read internal RAM
+#else
+      _alloc[i] = (uint8_t*)malloc(total);
+#endif
+      if (!_alloc[i]) return false;
+      memset(_alloc[i], GUARD, total);
+      _bufs[i] = _alloc[i] + _guardBytes;
+      memset(_bufs[i], 0, bytes);
+    }
+    _buf = _bufs[0];
     _band.setColorDepth(8);
     _band.setBuffer(_buf, width, STRIP_H, 8);
     _view.setColorDepth(8);
@@ -47,50 +60,79 @@ public:
   }
 
   size_t bufferBytes() const { return (size_t)_w * STRIP_H; }
+  uint8_t* buffer(int i = 0) const { return _bufs[i]; }
 
   static constexpr uint8_t GUARD = 0xA5;
-  // Number of guard bytes that were overwritten; reports the first one.
+  // Number of guard bytes that were overwritten (all buffers); reports the first one.
   size_t guardDamage(long* firstOffset) const
   {
     size_t bad = 0;
     *firstOffset = 0;
     size_t total = _guardBytes * 2 + bufferBytes();
-    for (size_t i = 0; i < total; i++) {
-      if (i >= _guardBytes && i < _guardBytes + bufferBytes()) continue;
-      if (_alloc[i] != GUARD) { if (!bad) *firstOffset = (long)i - (long)_guardBytes; bad++; }
-    }
+    for (int b = 0; b < _n; b++)
+      for (size_t i = 0; i < total; i++) {
+        if (i >= _guardBytes && i < _guardBytes + bufferBytes()) continue;
+        if (_alloc[b][i] != GUARD) { if (!bad) *firstOffset = (long)i - (long)_guardBytes; bad++; }
+      }
     return bad;
   }
 
   // Put the guard bytes back (after reporting damage), so the next frame is checked fresh.
   void resetGuards()
   {
-    memset(_alloc, GUARD, _guardBytes);
-    memset(_buf + bufferBytes(), GUARD, _guardBytes);
+    for (int b = 0; b < _n; b++) {
+      memset(_alloc[b], GUARD, _guardBytes);
+      memset(_bufs[b] + bufferBytes(), GUARD, _guardBytes);
+    }
   }
 
-  // draw(gfx) draws one full frame; it's called once per band.
+  // draw(gfx) draws one full frame; it's called once per band. Each finished
+  // band is copied to the target (the TV).
   template <typename DrawFn>
   void render(DrawFn draw)
   {
-    if (!_buf) return;   // begin() failed: draw nothing rather than write through a null buffer
+    if (!_buf || !_target) return;   // begin() failed: draw nothing rather than write through a null buffer
     for (int y0 = 0; y0 < _h; y0 += STRIP_H) {
       int rows = _h - y0 < STRIP_H ? _h - y0 : STRIP_H;
-      // Row y of the virtual frame lives at _buf + (y - y0) * _w.
-      // Only rows y0 .. y0+rows-1 are ever touched (clip rect below).
-      _view.setBuffer(_buf - (ptrdiff_t)y0 * _w, _w, _h, 8);
-      _view.setClipRect(0, y0, _w, rows);
-      draw(_view);
+      drawBand(_buf, y0, rows, draw);
       _band.pushSprite(_target, 0, y0);
     }
   }
 
+  // Same, but each finished band goes to sink(buffer, y0, rows) - e.g. a DMA
+  // transfer to the FPGA. Buffers alternate, so the sink may still be sending
+  // band N from one buffer while band N+1 is drawn into the other; the sink
+  // must wait for its previous transfer before starting a new one.
+  template <typename DrawFn, typename SinkFn>
+  void renderTo(DrawFn draw, SinkFn sink)
+  {
+    if (!_bufs[_n - 1]) return;
+    int k = 0;
+    for (int y0 = 0; y0 < _h; y0 += STRIP_H, k++) {
+      int rows = _h - y0 < STRIP_H ? _h - y0 : STRIP_H;
+      uint8_t* buf = _bufs[k % _n];
+      drawBand(buf, y0, rows, draw);
+      sink(buf, y0, rows);
+    }
+  }
+
 private:
+  template <typename DrawFn>
+  void drawBand(uint8_t* buf, int y0, int rows, DrawFn& draw)
+  {
+    // Row y of the virtual frame lives at buf + (y - y0) * _w.
+    // Only rows y0 .. y0+rows-1 are ever touched (clip rect below).
+    _view.setBuffer(buf - (ptrdiff_t)y0 * _w, _w, _h, 8);
+    _view.setClipRect(0, y0, _w, rows);
+    draw(_view);
+  }
+
   lgfx::LovyanGFX* _target = nullptr;
-  int _w = 0, _h = 0;
+  int _w = 0, _h = 0, _n = 1;
   uint8_t* _buf = nullptr;
-  uint8_t* _alloc = nullptr;
+  uint8_t* _bufs[2] = { nullptr, nullptr };
+  uint8_t* _alloc[2] = { nullptr, nullptr };
   size_t _guardBytes = 0;
-  LGFX_Sprite _band;   // the real STRIP_H-row buffer, pushed to the TV
-  LGFX_Sprite _view;   // full-size window onto it, clipped to one band
+  LGFX_Sprite _band;   // the real STRIP_H-row buffer 0, pushed to the TV
+  LGFX_Sprite _view;   // full-size window onto a band, clipped to that band
 };

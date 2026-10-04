@@ -172,7 +172,7 @@ module tb;
     end
   endtask
 
-  reg [7:0] img [0:86399];
+  reg [7:0] img [0:172799];
   reg [7:0] rect [0:3999];
 
   task send_rect(input integer x, input integer y, input integer w, input integer h,
@@ -185,7 +185,7 @@ module tb;
       spi_byte(x[7:0]); spi_byte(x[15:8]); spi_byte(y[7:0]); spi_byte(y[15:8]);
       spi_byte(w[7:0]); spi_byte(w[15:8]); spi_byte(h[7:0]); spi_byte(h[15:8]);
       for (i = 0; i < w * h; i = i + 1)
-        spi_byte(src == 0 ? img[y * 360 + i] : rect[i]);
+        spi_byte(src == 0 ? img[y * 720 + i] : rect[i]);
       for (i = 0; i < extra; i = i + 1) spi_byte(8'hEE);   // must be ignored
       c = crc; n = nbytes;
       spi_end;
@@ -259,14 +259,17 @@ module tb;
       link_err = link_err + 1;
     end
     capture(0);
-    if (dut.verify_words < 180 * 240) begin
+    // the checker starts at the first whole frame after the self test is
+    // written; give it a full frame of reads before judging
+    wait (dut.verify_words >= 360 * 240 || dut.spi_frames);
+    if (dut.verify_words < 360 * 240) begin
       $display("ERROR: self-test checker only saw %0d words", dut.verify_words);
       link_err = link_err + 1;
     end
 
-    // 2. a full ESP32 frame: 10 bands of 24 rows, then swap
+    // 2. a full ESP32 frame: 10 bands of 24 rows x 720, then swap
     for (bands = 0; bands < 10; bands = bands + 1)
-      send_rect(0, bands * 24, 360, 24, 0, 0);
+      send_rect(0, bands * 24, 720, 24, 0, 0);
     send_swap;
     #(1000000);
     if (ready) begin $display("ERROR: READY stayed high after a swap request"); link_err = link_err + 1; end
@@ -277,7 +280,7 @@ module tb;
       // 3. odd x, clipped right and bottom edges, trailing junk bytes, and an
       //    ignored 'X' transaction in between
       spi_begin; spi_byte(8'h58); spi_byte(1); spi_byte(2); spi_byte(3); spi_end;
-      send_rect(301, 211, 100, 40, 1, 7);
+      send_rect(661, 211, 100, 40, 1, 7);   // odd x, clipped at 720 and 240
       send_rect(7, 3, 0, 5, 1, 3);           // zero width: ignored
       send_swap;
       wait_ready;

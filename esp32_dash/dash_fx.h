@@ -73,7 +73,7 @@ static void txt(Gfx& g, const char* s, int x, int y, uint32_t color,
                 const lgfx::IFont* font, Datum datum = Datum::top_left, float size = 1)
 {
   g.setFont(font);
-  g.setTextSize(size);
+  g.setTextSize(size * dash::XS, size);
   g.setTextDatum(datum);
   g.setTextColor(color);
   g.drawString(s, x, y);
@@ -178,7 +178,7 @@ static void dial(Gfx& g, int cx, int cy, float R, float value, const DialStyle& 
   // center readout on a black backing so the cursor/ticks never cut through it;
   // at redline it alternates red/white (red alone smears into the red arc)
   g.setFont(bigFont);
-  g.setTextSize(1);
+  g.setTextSize(dash::XS, 1);
   int tw = g.textWidth(bigText) + 4, th = g.fontHeight();
   g.fillRect(cx - tw / 2, cy - 2 - th / 2, tw, th, BG);
   txt(g, bigText, cx, cy - 2, flash ? RED : WHITE, bigFont, Datum::middle_center);

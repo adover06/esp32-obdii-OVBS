@@ -26,7 +26,7 @@ module video_timing (
   output wire       sync,         // sample is sync tip
   output wire       burst,        // sample is in the colour burst window
   output wire       active,       // sample is picture
-  output wire [8:0] px,           // picture x 0..359 (when active)
+  output wire [9:0] px,           // picture x 0..719 (when active): one sample per pixel
   output wire [7:0] py            // picture y 0..239 (when active)
 );
   localparam SAMPLES    = 910;
@@ -38,7 +38,7 @@ module video_timing (
   localparam BURST_ON   = 76;
   localparam BURST_OFF  = 76 + 36;
   localparam ACT_ON     = 151;
-  localparam ACT_OFF    = 151 + 720;
+  localparam ACT_OFF    = 151 + 720;   // 720 pixels, one 14.3 MHz sample each
   localparam FIRST_LINE = 22;
 
   always @(posedge clk) begin
@@ -77,6 +77,6 @@ module video_timing (
 
   wire [9:0] hx = h - ACT_ON;
   wire [8:0] vy = v - FIRST_LINE;
-  assign px = hx[9:1];
+  assign px = hx;
   assign py = vy[7:0];
 endmodule

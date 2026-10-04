@@ -13,7 +13,7 @@ import this module, so the hardware and its tests can never disagree.
 # ---- DAC -------------------------------------------------------------------
 VCC = 3.3            # FPGA I/O voltage
 DAC_BITS = 6
-R_OUT = 150.0        # R-2R ladder output resistance (R)
+R_OUT = 135.0        # R-2R ladder output resistance (R): 270 ohm resistors, R = two in parallel
 R_LOAD = 75.0        # TV / head unit composite input
 V_PER_CODE = VCC / (1 << DAC_BITS) * R_LOAD / (R_OUT + R_LOAD)   # ~17.2 mV
 CODE_MAX = (1 << DAC_BITS) - 1
@@ -31,8 +31,8 @@ def ire_to_code(ire):
 SYNC = 0
 BLANK = round(ire_to_code(0))            # 17
 BLACK_IRE = 7.5                          # NTSC-M setup
-WHITE_IRE = 90.0     # 100 is standard; 90 leaves DAC headroom so bright yellow/cyan keep
-                     # most of their saturation (the 6-bit DAC tops out at 112 IRE)
+WHITE_IRE = 100.0    # standard white; the 270-ohm ladder (135 ohm out) tops out at 122 IRE,
+                     # so bright yellow/cyan keep most of their saturation
 BURST_AMP = round(20 * IRE_V / V_PER_CODE)   # 20 IRE -> 8 codes
 BURST_HI = BLANK + BURST_AMP
 BURST_LO = BLANK - BURST_AMP
@@ -46,9 +46,9 @@ HSYNC_LEN = 67               # 4.7 us
 EQ_LEN = 33                  # 2.3 us equalising pulse
 VSYNC_HIGH = 67              # serration: 4.7 us high per half line
 BURST_START, BURST_LEN = 76, 36      # 5.3 us after sync, 9 cycles
-ACTIVE_START, ACTIVE_LEN = 151, 720  # 360 pixels x 2 samples
+ACTIVE_START, ACTIVE_LEN = 151, 720  # 720 pixels x 1 sample
 FIRST_LINE = 22              # first picture line; 240 lines -> 22..261
-WIDTH, HEIGHT = 360, 240
+WIDTH, HEIGHT = 720, 240
 EQ_LINES = (0, 1, 2, 6, 7, 8)
 VSYNC_LINES = (3, 4, 5)
 FIRST_BURST_LINE = 9
@@ -140,7 +140,7 @@ BAR_COLOURS = [0xFF, 0xFC, 0x1F, 0x1C, 0xE3, 0xE0, 0x03, 0x00]
 def pattern(x, y):
     if x == 0 or x == WIDTH - 1 or y == 0 or y == HEIGHT - 1:
         return 0xFF
-    bar = min(x // 45, 7)
+    bar = min(x // 90, 7)
     if y < 160:
         return BAR_COLOURS[bar]
     if y < 200:

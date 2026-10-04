@@ -15,6 +15,7 @@
 #define STRIP_GUARD
 #include <LovyanGFX.hpp>
 #include <chrono>
+#include <vector>
 #include <string.h>
 #include <sys/stat.h>
 #include "dash.h"
@@ -79,7 +80,7 @@ int main(int argc, char** argv)
 
   long renders = 0, guardFails = 0, mismatches = 0;
   double tStrip = 0, tFull = 0;
-  const int widths[2] = { 240, 360 };
+  const int widths[3] = { 240, 360, 720 };
 
   for (int W : widths) {
     dash::setScreen(W, 4.0f / 3.0f);
@@ -87,6 +88,10 @@ int main(int argc, char** argv)
     LGFX_Sprite full; full.setColorDepth(8); full.createSprite(W, dash::H);  // reference render
     StripRenderer rend;
     if (!rend.begin(&tv, W, dash::H)) { printf("could not allocate the strip buffer\n"); return 1; }
+    // FPGA path: 2 alternating band buffers, each finished band handed to a sink
+    StripRenderer rend2;
+    if (!rend2.begin(nullptr, W, dash::H, 2)) { printf("could not allocate the band buffers\n"); return 1; }
+    std::vector<uint8_t> sent(W * dash::H);
 
     dash::Simulator sim;
     fx::DualState dual;
@@ -112,6 +117,13 @@ int main(int argc, char** argv)
         auto t1 = std::chrono::steady_clock::now();
         draw(full);
         auto t2 = std::chrono::steady_clock::now();
+        // the FPGA path: what the sink receives, band by band, must be the same frame
+        rend2.renderTo(draw, [&](uint8_t* buf, int y0, int rows) { memcpy(&sent[y0 * W], buf, (size_t)W * rows); });
+        long off2;
+        if (size_t bad = rend2.guardDamage(&off2)) {
+          if (guardFails++ < 10) printf("FAIL  memory (FPGA path): %s at %d px wrote %zu bytes outside a band buffer (frame %d)\n", name, W, bad, frame);
+          rend2.resetGuards();
+        }
         tStrip += std::chrono::duration<double, std::milli>(t1 - t0).count();
         tFull  += std::chrono::duration<double, std::milli>(t2 - t1).count();
         renders++;
@@ -127,6 +139,11 @@ int main(int argc, char** argv)
         for (int p = 0; p < W * dash::H; p++) diff += a[p] != b[p];
         if (diff > 4) {   // a stray pixel or two where a shape edge meets a band edge is harmless
           if (mismatches++ < 10) printf("FAIL  output: %s at %d px: %d pixels differ from a full-frame render (frame %d)\n", name, W, diff, frame);
+        }
+        int diff2 = 0;
+        for (int p = 0; p < W * dash::H; p++) diff2 += sent[p] != b[p];
+        if (diff2 > 4) {
+          if (mismatches++ < 10) printf("FAIL  output (FPGA path): %s at %d px: %d pixels differ (frame %d)\n", name, W, diff2, frame);
         }
         if (images && frame % 740 == 370 && scr >= 0) {   // ~every 24 s of driving
           char path[64];
