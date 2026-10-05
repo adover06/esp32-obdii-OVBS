@@ -238,11 +238,12 @@ private:
     TinySPP* s = _self;
     if (!s || len == 0 || len > PKT_MAX) return 0;
     portENTER_CRITICAL(&s->_qMux);
-    uint32_t used = s->_qHead - s->_qTail;
-    if (QUEUE_SIZE - used >= (uint32_t)len + 2) {
-      s->_q[s->_qHead++ % QUEUE_SIZE] = len & 0xFF;
-      s->_q[s->_qHead++ % QUEUE_SIZE] = len >> 8;
-      for (uint16_t i = 0; i < len; i++) s->_q[s->_qHead++ % QUEUE_SIZE] = data[i];
+    uint32_t h = s->_qHead;
+    if (QUEUE_SIZE - (h - s->_qTail) >= (uint32_t)len + 2) {
+      s->_q[h++ % QUEUE_SIZE] = len & 0xFF;
+      s->_q[h++ % QUEUE_SIZE] = len >> 8;
+      for (uint16_t i = 0; i < len; i++) s->_q[h++ % QUEUE_SIZE] = data[i];
+      s->_qHead = h;
     }   // else dropped (should never happen at OBD data rates)
     portEXIT_CRITICAL(&s->_qMux);
     return 0;
@@ -251,13 +252,15 @@ private:
   {
     int len = 0;
     portENTER_CRITICAL(&_qMux);
-    if (_qHead != _qTail) {
-      len = _q[_qTail++ % QUEUE_SIZE];
-      len |= _q[_qTail++ % QUEUE_SIZE] << 8;
+    uint32_t t = _qTail;
+    if (_qHead != t) {
+      len = _q[t++ % QUEUE_SIZE];
+      len |= _q[t++ % QUEUE_SIZE] << 8;
       for (int i = 0; i < len; i++) {
-        uint8_t b = _q[_qTail++ % QUEUE_SIZE];
+        uint8_t b = _q[t++ % QUEUE_SIZE];
         if (i < max) out[i] = b;
       }
+      _qTail = t;
       if (len > max) len = 0;
     }
     portEXIT_CRITICAL(&_qMux);

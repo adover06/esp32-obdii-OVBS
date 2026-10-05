@@ -84,6 +84,7 @@ int main(int argc, char** argv)
 
   for (int W : widths) {
     dash::setScreen(W, 4.0f / 3.0f);
+    fx::setSport(W == 360);   // cover both threshold sets
     LGFX_Sprite tv;   tv.setColorDepth(8);   tv.createSprite(W, dash::H);    // stands in for the TV
     LGFX_Sprite full; full.setColorDepth(8); full.createSprite(W, dash::H);  // reference render
     StripRenderer rend;

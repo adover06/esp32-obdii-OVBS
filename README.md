@@ -32,9 +32,15 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
   GPIO18 SCK -> D0, GPIO23 MOSI -> D1, GPIO5 CS -> D2, GPIO19 MISO <- D3, GPIO4 READY <- D4, GND.
 - Fallback (`OUTPUT_FPGA false` in `esp32_dash.ino`): GPIO25 to RCA center, GND to RCA shell.
 - Button on GPIO27 to GND (or the BOOT button).
-- Shift lights: LM3914 SIG (pin 5) <- GPIO26 (DAC), 1 kOhm pin 7 -> pin 8, 1 uF pin 3 -> pin 2,
-  LEDs from 5 V (ESP32 VIN) into pins 1 and 18..10; RGB LED on GPIO32/33/13 with one 270 Ohm
-  on its common leg.
+- Shift lights (`esp32_dash/shift_light.h`, `SHIFT_HW`):
+  - default: **WS2812B/SK6812 LED sticks** (e.g. two 8-LED sticks chained = 16 LEDs) on ONE data
+    wire: GPIO14 -> 270 Ohm -> stick 1 DIN, stick 1 DOUT -> stick 2 DIN, 5V -> VIN, GND -> GND.
+    First LEDs = RPM bar (green/yellow/red), last 2 = shift light (blue near the shift point,
+    red/yellow strobe at it). `MIRROR` shows the same 8-LED pattern on each stick. Our own RMT driver.
+  - `SHIFT_HW_LM3914`: LM3914 bar via PWM on GPIO14 + 10 kOhm / 1 uF filter, RGB LED on GPIO32/33/13.
+- Switches (pin -> switch -> GND, internal pull-ups): GPIO27 screen switch (latching: every flip =
+  next screen), GPIO16 RPM-array on/off, GPIO17 sport mode. A main switch on the head unit's
+  reverse/camera trigger wire shows the dash (not connected to the ESP32).
 - Power in the car: a 2-port USB charger, one cable per board.
 - Bluetooth Classic ELM327 that supports the car's protocol.
 
@@ -68,8 +74,9 @@ cd dash_preview_app
 
 ## Tuning
 
-- RPM feel (dials, shift bar, shift point): `YELLOW_RPM`, `ORANGE_RPM`, `SHIFT_RPM` in `esp32_dash/dash.h`
-  (now 2600 / 3200 / 3800). The LED bar starts at `BAR_START_RPM` in `esp32_dash/shift_light.h` (900).
+- RPM feel (dials, shift bar, shift point): `NORMAL_ZONES` = 2600 / 3200 / 3800 and
+  `SPORT_ZONES` = 3600 / 4400 / 5000 (yellow / orange / shift) in `esp32_dash/dash.h`; the sport
+  switch picks one live (`fx::setSport`). The LED bar starts at `BAR_START_RPM` in `shift_light.h` (900).
 - Startup gauge sweep timing: `UP`, `HOLD`, `DOWN` in `startupSweep()` (`esp32_dash.ino`).
 
 ## Single-ESP32 mode and TinySPP
@@ -94,6 +101,6 @@ Direct mode now defaults to 360x240 (`DIRECT_W`) with 120-row bands (`STRIP_ROWS
 
 Status: TinySPP is verified against the fake adapter (connect, pair, RFCOMM, OBD
 traffic). Not yet tested: the real Veepeak in the car, reconnect after a dropout,
-long runs, and FPGA mode with TinySPP on hardware. In single-ESP32 mode the shift
-lights are off for now (GPIO26 is the video DAC's twin); the plan is PWM on GPIO22
-through a 10 kOhm + 1 uF filter to the LM3914.
+long runs, and FPGA mode with TinySPP on hardware. Single-ESP32 mode is now the default
+(`OUTPUT_FPGA false`), and everything on the main header row is on one side of the DevKit
+(VIN, GND, D25 video, D27, D14, D32, D33, D13); the switches use D16/D17 on the other row.

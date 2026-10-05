@@ -58,9 +58,16 @@ constexpr float RAD2DEG = 57.2957795f;
 // color steps through yellow and orange sooner, and everything turns red and
 // flashes from SHIFT_RPM up.
 constexpr float RPM_MAX     = 6000;   // full scale of dials and shift bars
-constexpr float YELLOW_RPM  = 2600;   // green -> yellow
-constexpr float ORANGE_RPM  = 3200;   // yellow -> orange
-constexpr float SHIFT_RPM   = 3800;   // red + flashing shift light
+// Two sets, chosen by the SPORT switch (fx::setSport() applies them):
+//   normal: hot-feeling thresholds for everyday driving
+//   sport:  closer to the engine's real redline, for when you actually rev it
+struct RpmZones { float yellow, orange, shift; };
+constexpr RpmZones NORMAL_ZONES = { 2600, 3200, 3800 };
+constexpr RpmZones SPORT_ZONES  = { 3600, 4400, 5000 };
+static float YELLOW_RPM = NORMAL_ZONES.yellow;   // green -> yellow
+static float ORANGE_RPM = NORMAL_ZONES.orange;   // yellow -> orange
+static float SHIFT_RPM  = NORMAL_ZONES.shift;    // red + flashing shift light
+static bool  SPORT      = false;
 constexpr float IDLE_RPM    = 780;
 // simulator only: mph per 1000 rpm in each gear (index 0 = neutral)
 constexpr float GEAR_MPH_PER_K[6] = { 0, 5.6f, 10.1f, 14.6f, 19.6f, 24.3f };
@@ -544,6 +551,7 @@ static void header(Gfx& g, int idx, int count, const char* name, const Telemetry
   txt(g, buf, W - X(4), 3, TEXT, &fonts::Font0, Datum::top_right);
   int tagRight = W - X(40);
   txt(g, t.sourceTag, tagRight, 3, t.sourceColor, &fonts::Font0, Datum::top_right);
+  if (SPORT) txt(g, "SPORT", tagRight - g.textWidth(t.sourceTag) - X(16), 3, RED, &fonts::Font0, Datum::top_right);
   if ((ms / 500) % 2) g.fillRect(tagRight - g.textWidth(t.sourceTag) - X(7), 5, X(4), 4, t.sourceColor);
 }
 

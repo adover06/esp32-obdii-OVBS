@@ -2,19 +2,23 @@
 // composite (RCA) video input.
 //
 // Two ways to make the video (OUTPUT_FPGA below):
-//   true  (normal): the MAX1000 FPGA video card. The ESP32 draws 720x240
+//   true: the MAX1000 FPGA video card. The ESP32 draws 720x240
 //         frames in 24-row bands and streams them over SPI; the FPGA stores
 //         them (double-buffered) and generates the NTSC signal. No video
 //         framebuffer on the ESP32, no tearing, no flicker.
-//   false (fallback): the ESP32 makes the video itself on GPIO25, 240x240,
-//         like before the FPGA. Use it if the FPGA board is unplugged/broken.
+//   false (default): one ESP32 does everything; video on GPIO25 at 360x240
+//         (TinySPP Bluetooth frees the RAM for it).
 //
 // Board:  ESP32-WROOM-DA ("ESP32-WROOM-DA Module").
 // FPGA:   SCK GPIO18 -> D0, MOSI GPIO23 -> D1, CS GPIO5 -> D2,
 //         MISO GPIO19 <- D3, READY GPIO4 <- D4, GND <-> GND   (see fpga_link.h)
-// Shift lights (FPGA mode): LM3914 bar on GPIO26, RGB on GPIO32/33/13 (shift_light.h)
-// Button: GPIO27 -> pushbutton -> GND (or the BOOT button).
-//         Short press = next screen, hold 1 s = toggle auto-cycle.
+// Shift lights: LM3914 bar via PWM on GPIO14 + RC filter, RGB on GPIO32/33/13 (shift_light.h)
+// Single-ESP32 mode uses only one header row: VIN GND 25 27 14 32 33 13.
+// Switches (each: pin -> switch -> GND, no resistors):
+//   GPIO27 screen switch (latching): every flip, either way = next screen
+//   GPIO16 RPM-array switch: on = LED bar + RGB work, off = dark
+//   GPIO17 sport switch: on = sport RPM thresholds + SPORT badge
+//   BOOT button: short press = next screen, hold 1 s = toggle auto-cycle.
 // Serial: 1-4 = jump to a screen, n = next (115200 baud)
 // Screens: 1 DUAL (dual dials), 2 ARC (round tach), 3 DIAG (every value), 4 SYS (link + ESP32)
 // Car:    key at ON; adapter "OBDII" not connected to a phone or Mac.
@@ -34,8 +38,8 @@
 
 // ---- settings to tweak -------------------------------------------------
 #ifndef OUTPUT_FPGA
-#define OUTPUT_FPGA     true
-#endif   // false = old direct video on GPIO25 (fallback)
+#define OUTPUT_FPGA     false
+#endif   // false = one ESP32, video on GPIO25; true = MAX1000 FPGA video card
 #ifndef SHIFT_LIGHTS
 #define SHIFT_LIGHTS    true
 #endif   // LM3914 bar + RGB (FPGA mode only: GPIO26 is the old video's DAC twin)
@@ -43,7 +47,9 @@
 #define VIDEO_PIN       25
 #define OUTPUT_LEVEL    128    // direct-video mode only: raise (e.g. 180-220) if the picture is dim
 #define DISPLAY_ASPECT  (4.0f / 3.0f)  // 5/3 or 16/9 if the head unit stretches the picture wide
-#define BUTTON_PIN      27
+#define BUTTON_PIN      27     // screen switch (latching): every flip = next screen
+#define LIGHTS_SW_PIN   16     // RPM-array switch: on = shift lights work
+#define SPORT_SW_PIN    17     // sport-mode switch: on = sport RPM thresholds
 #define BOOT_BUTTON_PIN 0
 #define AUTO_CYCLE_MS   6000
 #define FRAME_MS        33     // ~30 fps target
@@ -153,7 +159,7 @@ void startupSweep()
     data.d.mph = e * 120;
     dual.rpmShown = data.d.rpm;                       // needles follow exactly (no glide)
     dual.mphShown = data.d.mph;
-#if OUTPUT_FPGA && SHIFT_LIGHTS
+#if SHIFT_LIGHTS
     shift::update(data.d.rpm, millis());
 #endif
     uint32_t now = millis();
@@ -165,7 +171,7 @@ void startupSweep()
   data.d.rpm = 0;
   data.d.mph = 0;
   dual.rpmShown = dual.mphShown = 0;
-#if OUTPUT_FPGA && SHIFT_LIGHTS
+#if SHIFT_LIGHTS
   shift::update(0, millis());
 #endif
 }
@@ -177,13 +183,47 @@ void nextScreen()
   Serial.printf("Screen %d: %s\n", screen + 1, dash::SCREEN_NAMES[screen]);
 }
 
-// Debounced button: short press = next screen, long press = auto-cycle
+// A switch input, debounced: `on` only changes after the pin has held its new
+// level for 30 ms (contacts bounce for a few ms when flipped). Switches go
+// from the pin to GND, so ON reads LOW (internal pull-up).
+struct Switch {
+  int pin;
+  bool on = false, raw = false;
+  uint32_t changedAt = 0;
+  void begin() { pinMode(pin, INPUT_PULLUP); on = raw = digitalRead(pin) == LOW; }
+  bool update(uint32_t now)   // true when `on` just changed
+  {
+    bool r = digitalRead(pin) == LOW;
+    if (r != raw) { raw = r; changedAt = now; }
+    if (raw != on && now - changedAt > 30) { on = raw; return true; }
+    return false;
+  }
+};
+Switch screenSw{ BUTTON_PIN }, lightsSw{ LIGHTS_SW_PIN }, sportSw{ SPORT_SW_PIN };
+
+void handleSwitches(uint32_t now)
+{
+  // latching screen switch: compare with its last state; either direction = next screen
+  if (screenSw.update(now)) nextScreen();
+  if (lightsSw.update(now)) {
+#if SHIFT_LIGHTS
+    shift::enabled = lightsSw.on;
+#endif
+    Serial.printf("RPM lights %s\n", lightsSw.on ? "ON" : "OFF");
+  }
+  if (sportSw.update(now)) {
+    fx::setSport(sportSw.on);
+    Serial.printf("Sport mode %s (shift at %d rpm)\n", sportSw.on ? "ON" : "OFF", (int)dash::SHIFT_RPM);
+  }
+}
+
+// BOOT button (momentary): short press = next screen, hold 1 s = auto-cycle
 void handleButton(uint32_t now)
 {
   static bool lastRaw = false, stable = false, longFired = false;
   static uint32_t changedAt = 0, pressedAt = 0;
 
-  bool raw = digitalRead(BUTTON_PIN) == LOW || digitalRead(BOOT_BUTTON_PIN) == LOW;
+  bool raw = digitalRead(BOOT_BUTTON_PIN) == LOW;
   if (raw != lastRaw) {
     lastRaw = raw;
     changedAt = now;
@@ -226,8 +266,11 @@ void logMem(const char* when)
 void setup()
 {
   Serial.begin(115200);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+  screenSw.begin();               // remember where the screen switch starts (no screen change at boot)
+  lightsSw.begin();
+  sportSw.begin();
+  fx::setSport(sportSw.on);
   delay(200);
   Serial.println("\n=== FOCUS//SE DASH ===");
   logMem("boot");
@@ -254,9 +297,6 @@ void setup()
   } else {
     Serial.println("[FPGA] no answer: check the 6 wires and that the FPGA has power. Sending anyway at 8 MHz.");
   }
-#if SHIFT_LIGHTS
-  shift::begin();
-#endif
 #else
   // Direct video: 360x240 needs 86 KB, which only fits next to Bluetooth when
   // the picture can live in PSRAM. Otherwise 240x240 (56 KB, even pixel mapping).
@@ -270,6 +310,11 @@ void setup()
   Serial.printf("[VID] %dx%d %s, strip buffer %u bytes\n", w, dash::H, psram ? "(picture in PSRAM)" : "(no PSRAM)",
                 (unsigned)renderer.bufferBytes());
   logMem("after video");
+#endif
+
+#if SHIFT_LIGHTS
+  shift::begin();
+  shift::enabled = lightsSw.on;
 #endif
 
   // boot splash
@@ -312,9 +357,10 @@ void loop()
   tCopy += micros() - tA;
   fx::updateDual(dual, data, dt);
   handleButton(now);
+  handleSwitches(now);
   handleSerial();
   if (autoCycle && now - lastCycle > AUTO_CYCLE_MS) nextScreen();
-#if OUTPUT_FPGA && SHIFT_LIGHTS
+#if SHIFT_LIGHTS
   shift::update(data.d.rpm, now);
 #endif
 

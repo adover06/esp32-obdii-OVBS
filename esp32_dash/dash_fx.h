@@ -55,19 +55,32 @@ static uint32_t ramp(const Stop* s, size_t n, float f)
   return s[n - 1].color;
 }
 
-// gradients follow the tunable thresholds in dash.h (RPM feel)
-constexpr float F_YELLOW = dash::YELLOW_RPM / dash::RPM_MAX;
-constexpr float F_ORANGE = dash::ORANGE_RPM / dash::RPM_MAX;
-constexpr float F_SHIFT  = dash::SHIFT_RPM  / dash::RPM_MAX;
-static const Stop RPM_RAMP[] = {
-  { 0.00f, CYAN }, { F_YELLOW, VIOLET }, { F_ORANGE, MAGENTA }, { F_SHIFT, RED }, { 1.00f, RED },
+// gradients follow the RPM thresholds in dash.h; setSport() rebuilds them
+static Stop RPM_RAMP[] = {
+  { 0.00f, CYAN }, { 0.43f, VIOLET }, { 0.53f, MAGENTA }, { 0.63f, RED }, { 1.00f, RED },
 };
 static const Stop MPH_RAMP[] = {
   { 0.00f, CYAN }, { 0.60f, 0x00B6FF }, { 1.00f, VIOLET },
 };
-static const Stop SHIFT_RAMP[] = {
-  { 0.00f, GREEN }, { F_YELLOW, 0xB6FF00 }, { F_ORANGE, AMBER }, { F_SHIFT, RED }, { 1.00f, RED },
+static Stop SHIFT_RAMP[] = {
+  { 0.00f, GREEN }, { 0.43f, 0xB6FF00 }, { 0.53f, AMBER }, { 0.63f, RED }, { 1.00f, RED },
 };
+
+// Normal or sport thresholds: sets dash::YELLOW/ORANGE/SHIFT_RPM (used by the
+// screens and the shift lights) and moves the gradient stops to match.
+static void setSport(bool on)
+{
+  const dash::RpmZones& z = on ? dash::SPORT_ZONES : dash::NORMAL_ZONES;
+  dash::SPORT = on;
+  dash::YELLOW_RPM = z.yellow;
+  dash::ORANGE_RPM = z.orange;
+  dash::SHIFT_RPM = z.shift;
+  for (Stop* r : { RPM_RAMP, SHIFT_RAMP }) {
+    r[1].at = z.yellow / dash::RPM_MAX;
+    r[2].at = z.orange / dash::RPM_MAX;
+    r[3].at = z.shift / dash::RPM_MAX;
+  }
+}
 
 static void txt(Gfx& g, const char* s, int x, int y, uint32_t color,
                 const lgfx::IFont* font, Datum datum = Datum::top_left, float size = 1)
@@ -314,7 +327,7 @@ static void drawDual(Gfx& g, const Telemetry& s, uint32_t ms, const DualState& s
   const int cxL = (int)(W / 2 - gap / 2 - dash::rx(R));
   const int cxR = (int)(W / 2 + gap / 2 + dash::rx(R));
 
-  static const DialStyle rpmStyle = { RPM_RAMP, 5, dash::RPM_MAX, dash::SHIFT_RPM, 1000, 1000 };
+  const DialStyle rpmStyle = { RPM_RAMP, 5, dash::RPM_MAX, dash::SHIFT_RPM, 1000, 1000 };   // follows sport mode
   static const DialStyle mphStyle = { MPH_RAMP, 3, 120, -1, 20, 1 };
   char b[12];
   snprintf(b, sizeof(b), "%d", (int)(st.rpmShown / 10) * 10);
@@ -327,6 +340,7 @@ static void drawDual(Gfx& g, const Telemetry& s, uint32_t ms, const DualState& s
   // where the data comes from: LIVE / NO LINK / SIM
   uint32_t tagColor = s.sourceColor == dash::GREEN ? GREEN : s.sourceColor == dash::RED ? RED : AMBER;
   txt(g, s.sourceTag, M + 4, 26, tagColor, &fonts::Font0);
+  if (dash::SPORT) txt(g, "SPORT", M + 4, 38, RED, &fonts::Font0);
 
   // three info tiles along the bottom
   char v[3][12];
