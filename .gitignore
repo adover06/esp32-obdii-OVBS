@@ -17,6 +17,7 @@
 !/esp32_fpga_test/
 !/esp32_shift_light_test/
 !/esp32_fake_elm327/
+!/esp32_dac_check/
 !/fpga/
 
 # FPGA: Quartus installers, build output, simulation output, vendor docs
