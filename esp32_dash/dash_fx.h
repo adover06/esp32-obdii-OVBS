@@ -111,6 +111,59 @@ static void shiftBar(Gfx& g, int x, int y, int w, int h, float f, bool flash, bo
   }
 }
 
+// ---- gradient ring: the dials' glowing value arc, in one pass ---------------------
+// Draws the lit part of a dial ring, from angle a0 to `end` (screen degrees),
+// with its color following `ramp` along the full span a0..a0+span. Pixels with
+// radius in [rIn, rOut] get the color; a `halo`-pixel border on each side gets
+// a dim version. Radii are in vertical pixels (x follows the pixel aspect).
+//
+// Instead of hundreds of small arc fills (each one scanning the dial's whole
+// bounding box), this visits each ring pixel once, row by row, and only the
+// rows inside the current clip band.
+static void gradientRing(Gfx& g, int cx, int cy, float rIn, float rOut, float halo,
+                         float a0, float span, float end, const Stop* ramp, size_t rampN, bool flash)
+{
+  if (end <= a0) return;
+  // 64-step color table for the core and the halo
+  uint32_t core[64], dimc[64];
+  for (int i = 0; i < 64; i++) {
+    uint32_t c = flash ? RED : fx::ramp(ramp, rampN, i / 63.0f);
+    core[i] = c;
+    dimc[i] = dim(c, 0.35f);
+  }
+  const float ri = rIn - halo, ro = rOut + halo;
+  const float ri2 = ri * ri, ro2 = ro * ro, cin2 = rIn * rIn, cout2 = rOut * rOut;
+  const float asp = dash::PX_ASPECT;              // x pixel -> vertical-pixel units
+  int32_t clx, cly, clw, clh;
+  g.getClipRect(&clx, &cly, &clw, &clh);
+  int yTop = cy - (int)ceilf(ro), yBot = cy + (int)ceilf(ro);
+  if (yTop < cly) yTop = cly;
+  if (yBot > cly + clh - 1) yBot = cly + clh - 1;
+  g.startWrite();
+  for (int y = yTop; y <= yBot; y++) {
+    float dy = (float)(y - cy), dy2 = dy * dy;
+    if (dy2 > ro2) continue;
+    int xo = (int)(sqrtf(ro2 - dy2) / asp) + 1;            // outer edge, in pixels
+    int xi = dy2 < ri2 ? (int)(sqrtf(ri2 - dy2) / asp) : 0; // inner hole
+    for (int side = 0; side < 2; side++) {
+      int xs = side ? cx + xi : cx - xo, xe = side ? cx + xo : cx - xi;
+      if (xs < clx) xs = clx;
+      if (xe > clx + clw - 1) xe = clx + clw - 1;
+      for (int x = xs; x <= xe; x++) {
+        float dx = (x - cx) * asp, r2 = dx * dx + dy2;
+        if (r2 < ri2 || r2 > ro2) continue;
+        float a = dash::fastAtan2Deg(dy, dx);
+        while (a < a0) a += 360;
+        if (a > end) continue;
+        int k = (int)((a - a0) / span * 63.0f + 0.5f);
+        if (k > 63) k = 63;
+        g.writePixel(x, y, (r2 < cin2 || r2 > cout2) ? dimc[k] : core[k]);
+      }
+    }
+  }
+  g.endWrite();
+}
+
 // ---- dial ----------------------------------------------------------------------
 struct DialStyle {
   const Stop* ramp; size_t rampN;
@@ -142,16 +195,9 @@ static void dial(Gfx& g, int cx, int cy, float R, float value, const DialStyle& 
   // redline zone marked on the outer ring
   if (st.redFrom > 0) ringArc(g, cx, cy, rOut + 1, rOut - 2, A0 + SPAN * st.redFrom / st.maxV, A0 + SPAN, RED);
 
-  // value arc: soft halo first, then the bright core, drawn in small slices
-  // so the color follows the gradient
+  // value arc: bright core with a soft 2-pixel halo, color following the gradient
   float end = A0 + SPAN * f;
-  for (float a = A0; a < end; a += 2.0f) {
-    float a1 = a + 2.2f < end ? a + 2.2f : end;
-    uint32_t c = ramp(st.ramp, st.rampN, (a - A0) / SPAN);
-    if (flash) c = RED;
-    ringArc(g, cx, cy, rArc1 + 2, rArc0 - 2, a, a1, dim(c, 0.35f));
-    ringArc(g, cx, cy, rArc1, rArc0, a, a1, c);
-  }
+  gradientRing(g, cx, cy, rArc0, rArc1, 2, A0, SPAN, end, st.ramp, st.rampN, flash);
 
   // ticks: majors are notches cut through the arc, minors are short marks
   // just inside it; labels sit right inside the arc to keep the center clear

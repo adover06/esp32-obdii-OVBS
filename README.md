@@ -22,6 +22,7 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
 | `dash_previews/` | Rendered screenshots |
 | `fpga/` | MAX1000 FPGA video card: 720x240, 256 colours, double-buffered composite video in SDRAM (Verilog, simulation, Quartus-in-Docker build). See `fpga/README.md` |
 | `esp32_fpga_test/` | ESP32 side of the FPGA card: SPI link test + animated test scene (drawn 360 wide, so it fills the left half of the 720-wide card) |
+| `esp32_fake_elm327/` | A fake ELM327 adapter + fake car for a SECOND ESP32: same Bluetooth name, PIN and address as the real Veepeak, answers ELMduino and the dashboard's OBD requests from a simulated drive. Lets the whole Bluetooth/OBD path be tested at a desk |
 | `esp32_shift_light_test/` | Shift-light bench test: LM3914 10-LED bar + RGB LED driven by a fake drive cycle, fixed RPMs, or an HW-201 IR sensor as a hand throttle |
 
 ## Hardware
@@ -70,3 +71,29 @@ cd dash_preview_app
 - RPM feel (dials, shift bar, shift point): `YELLOW_RPM`, `ORANGE_RPM`, `SHIFT_RPM` in `esp32_dash/dash.h`
   (now 2600 / 3200 / 3800). The LED bar starts at `BAR_START_RPM` in `esp32_dash/shift_light.h` (900).
 - Startup gauge sweep timing: `UP`, `HOLD`, `DOWN` in `startupSweep()` (`esp32_dash.ino`).
+
+## Single-ESP32 mode and TinySPP
+
+`OUTPUT_FPGA false` runs everything on one ESP32 (video on GPIO25). Two changes made
+that mode much better:
+
+- **TinySPP** (`esp32_dash/tiny_spp.h`, on by default, `TINY_BT false` to go back):
+  our own minimal Bluetooth Classic serial client written on the radio's HCI interface
+  (VHCI). It replaces Arduino's BluetoothSerial, whose Bluedroid stack is built with
+  audio, headsets, BLE and 4 connections. It does only what the ELM327 needs: connect
+  to one address, legacy PIN pairing, L2CAP, RFCOMM with credit flow control. Measured:
+  **+80 KB free RAM** (41 KB -> ~130 KB at 240 wide) and a program half the size
+  (1.2 MB -> 634 KB). BluetoothSerial is also deprecated for ESP32 core 4.0.
+- **Faster drawing**: the dial value arcs and the ARC tach used hundreds of small arc
+  fills, each scanning the whole dial; `fx::gradientRing` and `dash::segmentRing` visit
+  each ring pixel once. DUAL went from up to ~300 ms per frame at high RPM to ~40 ms.
+
+Measured on the board (single ESP32, 360x240, TinySPP connected to the fake adapter):
+DUAL 31-43 ms, ARC 36-39 ms, DIAG 30 ms, SYS 17 ms per frame; 63 KB heap free.
+Direct mode now defaults to 360x240 (`DIRECT_W`) with 120-row bands (`STRIP_ROWS`).
+
+Status: TinySPP is verified against the fake adapter (connect, pair, RFCOMM, OBD
+traffic). Not yet tested: the real Veepeak in the car, reconnect after a dropout,
+long runs, and FPGA mode with TinySPP on hardware. In single-ESP32 mode the shift
+lights are off for now (GPIO26 is the video DAC's twin); the plan is PWM on GPIO22
+through a 10 kOhm + 1 uF filter to the LM3914.

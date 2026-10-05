@@ -33,8 +33,12 @@
 #include "shift_light.h"
 
 // ---- settings to tweak -------------------------------------------------
-#define OUTPUT_FPGA     true   // false = old direct video on GPIO25 (fallback)
-#define SHIFT_LIGHTS    true   // LM3914 bar + RGB (FPGA mode only: GPIO26 is the old video's DAC twin)
+#ifndef OUTPUT_FPGA
+#define OUTPUT_FPGA     true
+#endif   // false = old direct video on GPIO25 (fallback)
+#ifndef SHIFT_LIGHTS
+#define SHIFT_LIGHTS    true
+#endif   // LM3914 bar + RGB (FPGA mode only: GPIO26 is the old video's DAC twin)
 #define VIDEO_SIGNAL    NTSC   // direct-video mode only: NTSC, NTSC_J, PAL, PAL_M, PAL_N
 #define VIDEO_PIN       25
 #define OUTPUT_LEVEL    128    // direct-video mode only: raise (e.g. 180-220) if the picture is dim
@@ -43,7 +47,18 @@
 #define BOOT_BUTTON_PIN 0
 #define AUTO_CYCLE_MS   6000
 #define FRAME_MS        33     // ~30 fps target
-#define USE_FAKE_DATA   false  // true = simulator, for testing without the car
+// Direct-video mode (OUTPUT_FPGA false): picture width and band height.
+// With TinySPP there's RAM for a 360-wide picture (86 KB) and tall bands;
+// every band re-runs the drawing code, so fewer bands = faster frames.
+#ifndef DIRECT_W
+#define DIRECT_W        (TINY_BT ? 360 : 240)
+#endif
+#ifndef STRIP_ROWS
+#define STRIP_ROWS      (TINY_BT ? 120 : 24)
+#endif
+#ifndef USE_FAKE_DATA
+#define USE_FAKE_DATA   false
+#endif  // true = simulator, for testing without the car
 // ------------------------------------------------------------------------
 
 // Direct composite video output (fallback mode). The picture size is chosen
@@ -246,10 +261,10 @@ void setup()
   // Direct video: 360x240 needs 86 KB, which only fits next to Bluetooth when
   // the picture can live in PSRAM. Otherwise 240x240 (56 KB, even pixel mapping).
   bool psram = psramFound();
-  int w = psram ? 360 : 240;
+  int w = psram ? 360 : DIRECT_W;
   dash::setScreen(w, DISPLAY_ASPECT);
-  // small allocation first, then the video picture
-  if (!renderer.begin(&tv, w, dash::H)) Serial.println("[MEM] ERROR: no RAM for the strip buffer");
+  // the band buffer first, then the video picture
+  if (!renderer.begin(&tv, w, dash::H, 1, STRIP_ROWS)) Serial.println("[MEM] ERROR: no RAM for the strip buffer");
   logMem("after strip buf");
   if (!tv.start(w, dash::H, psram ? 2 : 0)) Serial.println("[VID] ERROR: video failed to start");
   Serial.printf("[VID] %dx%d %s, strip buffer %u bytes\n", w, dash::H, psram ? "(picture in PSRAM)" : "(no PSRAM)",
@@ -287,11 +302,14 @@ void loop()
   last = now;
 
   // 1. update state (once per frame)
+  uint32_t tA = micros();
 #if USE_FAKE_DATA
   sim.update(dt);
 #else
   obd::copyInto(live, dt);
 #endif
+  static uint32_t tCopy = 0, tDraw = 0;
+  tCopy += micros() - tA;
   fx::updateDual(dual, data, dt);
   handleButton(now);
   handleSerial();
@@ -302,10 +320,12 @@ void loop()
 
   // 2. draw the frame band by band (drawing only reads state)
   int s = screen;
+  uint32_t tB = micros();
   showFrame([&](lgfx::LovyanGFX& g) {
     if (s == 0) fx::drawDual(g, data, now, dual);
     else dash::draw(g, s, data, now);
   });
+  tDraw += micros() - tB;
 
   // the band buffers have guard bytes around them: if drawing ever escapes the
   // band (a LovyanGFX call that ignores the clip rect), say which screen did it
@@ -352,6 +372,8 @@ void loop()
                        fpgaStatus.flags, fpgaStatus.errors() ? " ERROR" : "", fpgaLink.speed() / 1e6,
                        (unsigned)readyTimeouts);
 #endif
+    Serial.printf(" | per frame: copy %lu us, draw+show %lu us", (unsigned long)(tCopy / statFrames), (unsigned long)(tDraw / statFrames));
+    tCopy = tDraw = 0;
     Serial.println();
     statFrames = statSum = statMax = 0;
     statAt = millis();

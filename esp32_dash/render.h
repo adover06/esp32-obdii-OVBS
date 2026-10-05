@@ -20,18 +20,22 @@
 
 class StripRenderer {
 public:
-  static constexpr int STRIP_H = 24;   // 240 / 24 = 10 bands per frame
+  static constexpr int STRIP_H = 24;   // default band height: 240 / 24 = 10 bands per frame
 
   // target = the TV (or a desktop window), or nullptr when bands go to a sink
   // (the FPGA). buffers = 2 lets the next band be drawn while the previous one
   // is still being sent by DMA. Returns false if out of memory.
-  bool begin(lgfx::LovyanGFX* target, int width, int height, int buffers = 1)
+  // stripH: rows per band. Every band re-runs the whole drawing code (clipped),
+  // so taller bands = fewer passes = much faster frames, at the cost of RAM
+  // (width x stripH bytes per buffer).
+  bool begin(lgfx::LovyanGFX* target, int width, int height, int buffers = 1, int stripH = STRIP_H)
   {
     _target = target;
     _w = width;
     _h = height;
+    _sh = stripH < 1 ? 1 : stripH > height ? height : stripH;
     _n = buffers < 1 ? 1 : buffers > 2 ? 2 : buffers;
-    size_t bytes = (size_t)width * STRIP_H;
+    size_t bytes = (size_t)width * _sh;
     // Guard bytes on each side of every strip catch drawing that escapes the
     // clip rectangle. Test builds (STRIP_GUARD) use a whole frame on each side
     // so every stray write is caught; the ESP32 uses 64 bytes as an alarm.
@@ -54,12 +58,13 @@ public:
     }
     _buf = _bufs[0];
     _band.setColorDepth(8);
-    _band.setBuffer(_buf, width, STRIP_H, 8);
+    _band.setBuffer(_buf, width, _sh, 8);
     _view.setColorDepth(8);
     return true;
   }
 
-  size_t bufferBytes() const { return (size_t)_w * STRIP_H; }
+  size_t bufferBytes() const { return (size_t)_w * _sh; }
+  int stripHeight() const { return _sh; }
   uint8_t* buffer(int i = 0) const { return _bufs[i]; }
 
   static constexpr uint8_t GUARD = 0xA5;
@@ -92,8 +97,8 @@ public:
   void render(DrawFn draw)
   {
     if (!_buf || !_target) return;   // begin() failed: draw nothing rather than write through a null buffer
-    for (int y0 = 0; y0 < _h; y0 += STRIP_H) {
-      int rows = _h - y0 < STRIP_H ? _h - y0 : STRIP_H;
+    for (int y0 = 0; y0 < _h; y0 += _sh) {
+      int rows = _h - y0 < _sh ? _h - y0 : _sh;
       drawBand(_buf, y0, rows, draw);
       _band.pushSprite(_target, 0, y0);
     }
@@ -108,8 +113,8 @@ public:
   {
     if (!_bufs[_n - 1]) return;
     int k = 0;
-    for (int y0 = 0; y0 < _h; y0 += STRIP_H, k++) {
-      int rows = _h - y0 < STRIP_H ? _h - y0 : STRIP_H;
+    for (int y0 = 0; y0 < _h; y0 += _sh, k++) {
+      int rows = _h - y0 < _sh ? _h - y0 : _sh;
       uint8_t* buf = _bufs[k % _n];
       drawBand(buf, y0, rows, draw);
       sink(buf, y0, rows);
@@ -128,7 +133,7 @@ private:
   }
 
   lgfx::LovyanGFX* _target = nullptr;
-  int _w = 0, _h = 0, _n = 1;
+  int _w = 0, _h = 0, _n = 1, _sh = STRIP_H;
   uint8_t* _buf = nullptr;
   uint8_t* _bufs[2] = { nullptr, nullptr };
   uint8_t* _alloc[2] = { nullptr, nullptr };

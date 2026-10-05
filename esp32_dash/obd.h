@@ -8,7 +8,16 @@
 // Include after dash.h. ESP32 only (not used by the desktop preview).
 #pragma once
 
+// TINY_BT true: our own minimal Bluetooth serial client (tiny_spp.h, a few KB).
+// false: Arduino's BluetoothSerial (the full Bluedroid stack, ~100 KB more RAM).
+#ifndef TINY_BT
+#define TINY_BT true
+#endif
+#if TINY_BT
+#include "tiny_spp.h"
+#else
 #include "BluetoothSerial.h"
+#endif
 #include "ELMduino.h"
 
 namespace obd {
@@ -72,7 +81,11 @@ struct Shared {
 Shared shared;
 SemaphoreHandle_t lock = nullptr;
 TaskHandle_t taskHandle = nullptr;
+#if TINY_BT
+TinySPP bt;
+#else
 BluetoothSerial bt;
+#endif
 ELM327 elm;
 
 const char* statusText(int8_t s)
@@ -359,6 +372,9 @@ void task(void*)
 bool beginBluetooth()
 {
   if (!lock) lock = xSemaphoreCreateMutex();
+#if TINY_BT
+  bt.debug = true;   // print each Bluetooth step ([SPP] lines)
+#endif
   // true = we start the connection (master), true = release BLE memory (we only use Classic)
   if (!bt.begin("ESP32-OBD", true, true)) {
     Serial.println("[BT ] Bluetooth failed to start (out of memory?)");

@@ -336,6 +336,64 @@ static void ringArc(Gfx& g, int cx, int cy, float rOut, float rIn, float a0, flo
   g.fillEllipseArc(cx, cy, (int)(rox + 0.5f), (int)(rix + 0.5f), (int)(rOut + 0.5f), (int)(rIn + 0.5f), p0, p1, color);
 }
 
+// Fast approximate atan2 in degrees (error < 0.3 deg), 0 = 3 o'clock, clockwise
+// on screen (y grows downward).
+static float fastAtan2Deg(float y, float x)
+{
+  float ax = fabsf(x), ay = fabsf(y);
+  float mn = ax < ay ? ax : ay, mx = ax < ay ? ay : ax;
+  if (mx == 0) return 0;
+  float t = mn / mx, t2 = t * t;
+  float a = ((-0.0464964749f * t2 + 0.15931422f) * t2 - 0.327622764f) * t2 * t + t;   // atan(t), radians
+  if (ay > ax) a = 1.57079637f - a;
+  if (x < 0) a = 3.14159274f - a;
+  if (y < 0) a = -a;
+  return a * dash::RAD2DEG;
+}
+
+// A ring split into `segs` equal segments (the ARC tachometer), drawn in one
+// pass: each ring pixel is visited once and colored by segment, instead of one
+// arc fill per segment (each of which scans the dial's whole bounding box).
+// colorOf(i) returns the color of segment i; gapDeg is the dark gap after each.
+template <typename ColorFn>
+static void segmentRing(Gfx& g, int cx, int cy, float rIn, float rOut, float a0, float span,
+                        int segs, float gapDeg, ColorFn colorOf)
+{
+  uint8_t col[64];   // RGB332 (a uint8_t color is RGB332 to LovyanGFX)
+  if (segs > 64) segs = 64;
+  for (int i = 0; i < segs; i++) col[i] = colorOf(i);
+  const float segDeg = span / segs, ri2 = rIn * rIn, ro2 = rOut * rOut, asp = PX_ASPECT;
+  int32_t clx, cly, clw, clh;
+  g.getClipRect(&clx, &cly, &clw, &clh);
+  int yTop = cy - (int)ceilf(rOut), yBot = cy + (int)ceilf(rOut);
+  if (yTop < cly) yTop = cly;
+  if (yBot > cly + clh - 1) yBot = cly + clh - 1;
+  g.startWrite();
+  for (int y = yTop; y <= yBot; y++) {
+    float dy = (float)(y - cy), dy2 = dy * dy;
+    if (dy2 > ro2) continue;
+    int xo = (int)(sqrtf(ro2 - dy2) / asp) + 1;
+    int xi = dy2 < ri2 ? (int)(sqrtf(ri2 - dy2) / asp) : 0;
+    for (int side = 0; side < 2; side++) {
+      int xs = side ? cx + xi : cx - xo, xe = side ? cx + xo : cx - xi;
+      if (xs < clx) xs = clx;
+      if (xe > clx + clw - 1) xe = clx + clw - 1;
+      for (int x = xs; x <= xe; x++) {
+        float dx = (x - cx) * asp, r2 = dx * dx + dy2;
+        if (r2 < ri2 || r2 > ro2) continue;
+        float a = fastAtan2Deg(dy, dx);
+        while (a < a0) a += 360;
+        float rel = a - a0;
+        if (rel >= span) continue;
+        int i = (int)(rel / segDeg);
+        if (rel - i * segDeg > segDeg - gapDeg) continue;   // the gap between segments
+        g.writePixel(x, y, col[i]);
+      }
+    }
+  }
+  g.endWrite();
+}
+
 // Thick line from a to b, ar/br = half-width at each end (a tapered "wedge").
 // Built from plain lines and filled triangles because LovyanGFX's
 // drawWedgeLine/drawWideLine replace the clip rectangle with their own
@@ -506,13 +564,11 @@ static void drawArc(Gfx& g, const Telemetry& s, uint32_t ms)
   ringArc(g, cx, cy, rOut + 6, rOut + 4, a0 + span * SHIFT_RPM / RPM_MAX, a0 + span, (uint8_t)RED);
 
   int lit = (int)(frac(d.rpm, 0, RPM_MAX) * segs + 0.5f);
-  for (int i = 0; i < segs; i++) {
-    float sa = a0 + span * i / segs;
-    float ea = sa + span / segs - 1.6f;
+  segmentRing(g, cx, cy, rIn, rOut, a0, span, segs, 1.6f, [&](int i) -> uint8_t {
     uint8_t c = GRID;
     if (i < lit) c = d.rpm >= SHIFT_RPM ? (flash ? RED : WHITE) : zoneRpm((i + 0.5f) / segs);
-    ringArc(g, cx, cy, rOut, rIn, sa, ea, c);
-  }
+    return c;
+  });
   // 1000 rpm labels
   const int kMax = (int)(RPM_MAX / 1000);
   for (int k = 0; k <= kMax; k++) {
