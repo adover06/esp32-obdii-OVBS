@@ -11,6 +11,7 @@ Live engine data from a 2000 Ford Focus, shown on a car head unit's composite
 
 | Folder | What it is |
 |---|---|
+| `esp32_dash_final/` | **The car build, cleaned up for reading:** one ESP32, video on GPIO25 at 360x240, TinySPP Bluetooth, WS2812 shift-light sticks, screen/RPM-lights/sport switches. No FPGA, Bluedroid, LM3914 or PSRAM code paths. Start here |
 | `esp32_dash/` | Main dashboard: 4 screens (dual dials, arc tach, diagnostics, system), live OBD data on a background task, LM3914 + RGB shift lights, ignition-style gauge sweep at startup, fake-data simulator for bench testing |
 | `esp32_obd_test/` | Single-screen OBD test: every value with its status (OK / NO DATA / TIMEOUT) plus connection debug output |
 | `esp32_simple/` | Beginner-friendly two-screen version with `getRPM()`-style getters |
