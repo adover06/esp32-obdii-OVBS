@@ -48,6 +48,8 @@
 #define AUTO_CYCLE_MS   6000   // auto-cycle: time on each screen
 #define FRAME_MS        33     // ~30 fps target
 #define USE_FAKE_DATA   false  // true = simulated driving, for testing without the car
+#define SPORT_LED_PIN   32
+#define RPM_LED_PIN     33
 // ------------------------------------------------------------------------
 
 // The composite video output (LovyanGFX's CVBS driver on the ESP32's DAC).
@@ -137,12 +139,37 @@ void startupSweep()
   data.d.mph = 0;
   dual.rpmShown = dual.mphShown = 0;
   shift::update(0, millis());
-}
-
-// ---- switches -------------------------------------------------------------------
+}// ---- switches -------------------------------------------------------------------
 // A switch input, debounced: `on` only changes after the pin has held its new
 // level for 30 ms (contacts bounce for a few ms when flipped). Switches go
 // from the pin to GND, so ON reads LOW (internal pull-up resistor).
+
+struct statusLED {
+  int pin;
+  bool on = false;
+  void begin() { 
+    pinMode(pin, OUTPUT);
+  }
+  void update(bool value) { 
+    on = value; 
+    digitalWrite(pin, on ? HIGH : LOW); 
+  }
+  void turnOn() { 
+    update(true); 
+  }
+  void turnOff() { 
+    update(false); 
+  }
+  void toggle(){
+    update(!on);
+  }
+};
+
+statusLED sportlight{SPORT_LED_PIN};
+statusLED RPMLight{RPM_LED_PIN};
+
+
+
 struct Switch {
   int pin;
   bool on = false, raw = false;
@@ -163,10 +190,12 @@ void handleSwitches(uint32_t now)
   // latching screen switch: compared with its last state, so either direction = next screen
   if (screenSw.update(now)) nextScreen();
   if (lightsSw.update(now)) {
+    RPMLight.toggle();
     shift::enabled = lightsSw.on;
     Serial.printf("RPM lights %s\n", lightsSw.on ? "ON" : "OFF");
   }
   if (sportSw.update(now)) {
+    sportlight.toggle();
     fx::setSport(sportSw.on);
     Serial.printf("Sport mode %s (shift at %d rpm)\n", sportSw.on ? "ON" : "OFF", (int)dash::SHIFT_RPM);
   }
@@ -230,7 +259,11 @@ void setup()
   delay(200);
   Serial.println("\n=== FOCUS//SE DASH ===");
   logMem("boot");
-
+  sportlight.begin();
+  RPMLight.begin();
+  sportlight.update(sportSw.on);
+  RPMLight.update(lightsSw.on);
+  
   // the band buffer first (43 KB), then the video picture (86 KB)
   dash::setScreen(VIDEO_W, DISPLAY_ASPECT);
   if (!renderer.begin(&tv, VIDEO_W, dash::H, BAND_ROWS)) Serial.println("[MEM] ERROR: no RAM for the band buffer");
