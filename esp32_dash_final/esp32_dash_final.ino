@@ -106,7 +106,6 @@ void showFrame(DrawFn draw)
 {
   renderer.render(draw);
 }
-
 void nextScreen()
 {
   screen = (screen + 1) % dash::SCREEN_COUNT;
